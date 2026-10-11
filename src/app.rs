@@ -228,14 +228,26 @@ impl MlvExplorerApp {
     fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
         let input = ctx.input(|i| i.clone());
 
-        // Mode switching: G -> Grid, E / Enter -> Player
+        // Mode switching: G -> Grid, E / Enter -> Player, F -> Fullscreen Player
         if input.key_pressed(egui::Key::G) {
             self.view_mode = ViewMode::Grid;
+            self.player_view.is_fullscreen = false;
         }
         if input.key_pressed(egui::Key::E) || (self.view_mode == ViewMode::Grid && input.key_pressed(egui::Key::Enter)) {
             if self.selected_video_idx.is_some() {
                 self.view_mode = ViewMode::Player;
                 self.ensure_playback(ctx);
+            }
+        }
+        if input.key_pressed(egui::Key::F) {
+            if self.view_mode == ViewMode::Grid {
+                if self.selected_video_idx.is_some() {
+                    self.view_mode = ViewMode::Player;
+                    self.player_view.is_fullscreen = true;
+                    self.ensure_playback(ctx);
+                }
+            } else {
+                self.player_view.is_fullscreen = !self.player_view.is_fullscreen;
             }
         }
 
@@ -299,91 +311,107 @@ impl eframe::App for MlvExplorerApp {
         self.handle_drag_and_drop(ctx);
         self.handle_keyboard_shortcuts(ctx);
 
+        let is_fullscreen_player = self.view_mode == ViewMode::Player && self.player_view.is_fullscreen;
+
+        // Sync fullscreen state with window viewport
+        let was_fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+        if was_fullscreen != is_fullscreen_player {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(is_fullscreen_player));
+        }
+
         // 1. Studio Top Bar
-        egui::TopBottomPanel::top("studio_top_bar")
-            .exact_height(38.0)
-            .show(ctx, |ui| {
-                let can_open_player = self.selected_video_idx.is_some();
-                let is_player_mode = self.view_mode == ViewMode::Player;
+        if !is_fullscreen_player {
+            egui::TopBottomPanel::top("studio_top_bar")
+                .exact_height(38.0)
+                .show(ctx, |ui| {
+                    let can_open_player = self.selected_video_idx.is_some();
+                    let is_player_mode = self.view_mode == ViewMode::Player;
 
-                let (filter_changed, action) = TopBar::show(
-                    ui,
-                    &mut self.filter,
-                    is_player_mode,
-                    can_open_player,
-                    &self.cameras,
-                    &self.lenses,
-                );
+                    let (filter_changed, action) = TopBar::show(
+                        ui,
+                        &mut self.filter,
+                        is_player_mode,
+                        can_open_player,
+                        &self.cameras,
+                        &self.lenses,
+                    );
 
-                if filter_changed {
-                    self.reload_catalog();
-                }
+                    if filter_changed {
+                        self.reload_catalog();
+                    }
 
-                if let Some(act) = action {
-                    match act {
-                        TopBarAction::SwitchToGrid => {
-                            self.view_mode = ViewMode::Grid;
-                        }
-                        TopBarAction::SwitchToPlayer => {
-                            if self.selected_video_idx.is_some() {
-                                self.view_mode = ViewMode::Player;
-                                self.ensure_playback(ctx);
+                    if let Some(act) = action {
+                        match act {
+                            TopBarAction::SwitchToGrid => {
+                                self.view_mode = ViewMode::Grid;
                             }
-                        }
-                        TopBarAction::ImportFiles => {
-                            if let Some(files) = rfd::FileDialog::new()
-                                .add_filter("Magic Lantern RAW Video", &["mlv", "MLV"])
-                                .pick_files()
-                            {
-                                for f in files {
-                                    self.ingest_path(&f);
+                            TopBarAction::SwitchToPlayer => {
+                                if self.selected_video_idx.is_some() {
+                                    self.view_mode = ViewMode::Player;
+                                    self.ensure_playback(ctx);
                                 }
                             }
-                        }
-                        TopBarAction::ImportFolder => {
-                            if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                                self.ingest_path(&folder);
+                            TopBarAction::ImportFiles => {
+                                if let Some(files) = rfd::FileDialog::new()
+                                    .add_filter("Magic Lantern RAW Video", &["mlv", "MLV"])
+                                    .pick_files()
+                                {
+                                    for f in files {
+                                        self.ingest_path(&f);
+                                    }
+                                }
+                            }
+                            TopBarAction::ImportFolder => {
+                                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                                    self.ingest_path(&folder);
+                                }
+                            }
+                            TopBarAction::OpenCatalogModal => {
+                                self.catalog_dialog.is_open = true;
                             }
                         }
-                        TopBarAction::OpenCatalogModal => {
-                            self.catalog_dialog.is_open = true;
-                        }
                     }
-                }
-            });
+                });
+        }
 
         // 2. Status Bar (Bottom)
-        egui::TopBottomPanel::bottom("studio_status_bar")
-            .exact_height(24.0)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(&self.status_bar_text).small().color(TEXT_MUTED));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new(&self.gpu_info).small().color(TEXT_MUTED));
-                        ui.separator();
-                        ui.label(RichText::new(format!("{} clips", self.videos.len())).small().color(TEXT_SECONDARY));
+        if !is_fullscreen_player {
+            egui::TopBottomPanel::bottom("studio_status_bar")
+                .exact_height(24.0)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(&self.status_bar_text).small().color(TEXT_MUTED));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(RichText::new(&self.gpu_info).small().color(TEXT_MUTED));
+                            ui.separator();
+                            ui.label(RichText::new(format!("{} clips", self.videos.len())).small().color(TEXT_SECONDARY));
+                        });
                     });
                 });
-            });
+        }
 
         // 3. Left Navigator Sidebar
-        egui::SidePanel::left("studio_left_navigator")
-            .default_width(220.0)
-            .width_range(180.0..=320.0)
-            .show(ctx, |ui| {
-                if Navigator::show(ui, &mut self.filter, &self.facets) {
-                    self.reload_catalog();
-                }
-            });
+        if !is_fullscreen_player {
+            egui::SidePanel::left("studio_left_navigator")
+                .default_width(220.0)
+                .width_range(180.0..=320.0)
+                .show(ctx, |ui| {
+                    if Navigator::show(ui, &mut self.filter, &self.facets) {
+                        self.reload_catalog();
+                    }
+                });
+        }
 
         // 4. Right Metadata Inspector Sidebar
-        egui::SidePanel::right("studio_right_inspector")
-            .default_width(280.0)
-            .width_range(240.0..=380.0)
-            .show(ctx, |ui| {
-                let mut sel_vid = self.selected_video_idx.and_then(|idx| self.videos.get_mut(idx));
-                self.inspector.show(ui, sel_vid.as_deref_mut(), &self.db, &self.all_tags);
-            });
+        if !is_fullscreen_player {
+            egui::SidePanel::right("studio_right_inspector")
+                .default_width(280.0)
+                .width_range(240.0..=380.0)
+                .show(ctx, |ui| {
+                    let mut sel_vid = self.selected_video_idx.and_then(|idx| self.videos.get_mut(idx));
+                    self.inspector.show(ui, sel_vid.as_deref_mut(), &self.db, &self.all_tags);
+                });
+        }
 
         // 5. Central Workspace: Grid or Player View
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -431,6 +459,7 @@ impl eframe::App for MlvExplorerApp {
                                         match act {
                                             PlayerAction::BackToGrid => {
                                                 self.view_mode = ViewMode::Grid;
+                                                self.player_view.is_fullscreen = false;
                                             }
                                             PlayerAction::Seek(frame) => {
                                                 pb.set_target(frame, self.player_view.is_looping);
@@ -450,6 +479,7 @@ impl eframe::App for MlvExplorerApp {
                                                 let _ = self.db.set_stretch_factor(id, factor);
                                                 self.reload_catalog();
                                             }
+                                            PlayerAction::ToggleFullscreen => {}
                                         }
                                     }
                                 }

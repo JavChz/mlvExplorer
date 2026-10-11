@@ -166,6 +166,8 @@ fn worker(shared: Arc<Shared>, source: Arc<FrameSource>, ctx: egui::Context) {
                     .find(|f| !s.cache.contains_key(f) && !s.in_flight.contains(f));
                 if let Some(f) = pick {
                     s.in_flight.insert(f);
+                    // Wake up another idle worker thread so all threads decode simultaneously!
+                    shared.cv.notify_one();
                     break f;
                 }
                 s = shared.cv.wait(s).unwrap();
@@ -200,6 +202,8 @@ fn worker(shared: Arc<Shared>, source: Arc<FrameSource>, ctx: egui::Context) {
                 fwd < ahead + 4 || count - fwd <= 16
             });
         }
+        // Wake another worker if there are more jobs in the window
+        shared.cv.notify_one();
         drop(s);
         ctx.request_repaint();
     }

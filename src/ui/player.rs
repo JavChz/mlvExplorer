@@ -15,6 +15,13 @@ pub enum PlayerAction {
     SetRating(u8),
     SetFlag(PickFlag),
     SetStretch(f32),
+    ToggleFullscreen,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ZoomMode {
+    Fit,
+    Scale(f32),
 }
 
 pub struct PlayerView {
@@ -22,8 +29,12 @@ pub struct PlayerView {
     pub is_playing: bool,
     pub is_looping: bool,
     pub playback_speed: f32,
-    pub exposure_ev: f32, // -2.0 to +2.0 EV
-    pub zoom_100: bool,
+    pub exposure_ev: f32, // -2.5 to +2.5 EV
+    pub wb_temperature: f32, // -50.0 (Cool) to +50.0 (Warm)
+    pub wb_tint: f32, // -50.0 (Green) to +50.0 (Magenta)
+    pub zoom_mode: ZoomMode,
+    pub pan_offset: Vec2,
+    pub is_fullscreen: bool,
     pub last_frame_time: Instant,
     pub last_shown_frame: Option<Arc<crate::mlv::DecodedFrame>>,
 }
@@ -36,7 +47,11 @@ impl Default for PlayerView {
             is_looping: true,
             playback_speed: 1.0,
             exposure_ev: 0.0,
-            zoom_100: false,
+            wb_temperature: 0.0,
+            wb_tint: 0.0,
+            zoom_mode: ZoomMode::Fit,
+            pan_offset: Vec2::ZERO,
+            is_fullscreen: false,
             last_frame_time: Instant::now(),
             last_shown_frame: None,
         }
@@ -56,10 +71,42 @@ impl PlayerView {
         // Notify playback engine of target frame for read-ahead
         playback.set_target(self.current_frame, self.is_looping);
 
+        // Global hotkeys in Player mode
+        if ui.input(|i| i.key_pressed(egui::Key::F)) {
+            self.is_fullscreen = !self.is_fullscreen;
+            action = Some(PlayerAction::ToggleFullscreen);
+        }
+        if self.is_fullscreen && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.is_fullscreen = false;
+            action = Some(PlayerAction::ToggleFullscreen);
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Z)) {
+            if self.zoom_mode == ZoomMode::Fit {
+                self.zoom_mode = ZoomMode::Scale(1.0);
+            } else {
+                self.zoom_mode = ZoomMode::Fit;
+                self.pan_offset = Vec2::ZERO;
+            }
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals)) {
+            let cur = match self.zoom_mode {
+                ZoomMode::Fit => 1.0,
+                ZoomMode::Scale(s) => s,
+            };
+            self.zoom_mode = ZoomMode::Scale((cur * 1.25).min(8.0));
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Minus)) {
+            let cur = match self.zoom_mode {
+                ZoomMode::Fit => 1.0,
+                ZoomMode::Scale(s) => s,
+            };
+            self.zoom_mode = ZoomMode::Scale((cur * 0.8).max(0.15));
+        }
+
         // 1. Studio Player Header Bar
         ui.horizontal(|ui| {
             if ui.button(RichText::new("⬅ Library [G]").strong()).clicked()
-                || ui.input(|i| i.key_pressed(egui::Key::G) || i.key_pressed(egui::Key::Escape))
+                || ui.input(|i| !self.is_fullscreen && (i.key_pressed(egui::Key::G) || i.key_pressed(egui::Key::Escape)))
             {
                 action = Some(PlayerAction::BackToGrid);
             }
@@ -81,26 +128,35 @@ impl PlayerView {
                 ui.label(RichText::new(&video.camera_name).small().color(TEXT_MUTED));
             }
 
-            // Right-aligned Toolbar: De-Squeeze, Zoom, Exposure, Decode Perf
+            // Right-aligned Toolbar: Realtime status, Stretch, Fullscreen, Zoom, WB, Exposure
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Exposure EV with quick reset
-                if self.exposure_ev != 0.0 && ui.small_button("↺ 0").clicked() {
-                    self.exposure_ev = 0.0;
-                }
-                ui.add(
-                    egui::Slider::new(&mut self.exposure_ev, -2.5..=2.5)
-                        .text("EV")
-                        .step_by(0.1)
-                        .show_value(true),
-                );
-                ui.label(RichText::new("Exposure:").small().color(TEXT_SECONDARY));
+                ui.label(RichText::new("🚀 GPU Debayer: Direct").small().color(Color32::from_rgb(96, 165, 250)));
+                ui.separator();
+
+                // Real-Time / Buffer Health Indicator
+                let ready_ahead = playback.ready_ahead(self.current_frame, 24);
+                let is_realtime = ready_ahead >= 3 || (!self.is_playing && playback.is_ready(self.current_frame));
+                let status_text = if !self.is_playing {
+                    format!("● READY ({} buf)", playback.cache_count())
+                } else if is_realtime {
+                    format!("⚡ REAL-TIME ({} buf)", ready_ahead)
+                } else {
+                    format!("⏳ BUFFERING ({}/{})", ready_ahead, 6)
+                };
+                let status_col = if is_realtime {
+                    Color32::from_rgb(34, 197, 94) // Studio Green
+                } else {
+                    Color32::from_rgb(234, 179, 8) // Warning Gold
+                };
+                ui.label(RichText::new(status_text).strong().size(12.0).color(status_col));
 
                 ui.separator();
 
-                // 1:1 vs Fit toggle
-                let zoom_label = if self.zoom_100 { "🔍 100% (1:1)" } else { "⛶ Fit" };
-                if ui.selectable_label(self.zoom_100, RichText::new(zoom_label).small()).clicked() {
-                    self.zoom_100 = !self.zoom_100;
+                // Fullscreen toggle button
+                let fs_label = if self.is_fullscreen { "🗗 Exit [F]" } else { "⛶ Fullscreen [F]" };
+                if ui.selectable_label(self.is_fullscreen, RichText::new(fs_label).small()).on_hover_text("Toggle Fullscreen Cinema Mode [F]").clicked() {
+                    self.is_fullscreen = !self.is_fullscreen;
+                    action = Some(PlayerAction::ToggleFullscreen);
                 }
 
                 ui.separator();
@@ -139,25 +195,90 @@ impl PlayerView {
 
                 ui.separator();
 
-                // Real-Time / Buffer Health Indicator
-                let ready_ahead = playback.ready_ahead(self.current_frame, 24);
-                let is_realtime = ready_ahead >= 3 || (!self.is_playing && playback.is_ready(self.current_frame));
-                let status_text = if !self.is_playing {
-                    format!("● READY ({} buf)", playback.cache_count())
-                } else if is_realtime {
-                    format!("⚡ REAL-TIME ({} buf)", ready_ahead)
-                } else {
-                    format!("⏳ BUFFERING ({}/{})", ready_ahead, 6)
+                // Zoom Controls: Fit, 50%, 100%, 200%, -/+, and custom levels
+                if ui.small_button("+").on_hover_text("Zoom In [+]").clicked() {
+                    let cur = match self.zoom_mode {
+                        ZoomMode::Fit => 1.0,
+                        ZoomMode::Scale(s) => s,
+                    };
+                    self.zoom_mode = ZoomMode::Scale((cur * 1.25).min(8.0));
+                }
+                if ui.small_button("-").on_hover_text("Zoom Out [-]").clicked() {
+                    let cur = match self.zoom_mode {
+                        ZoomMode::Fit => 1.0,
+                        ZoomMode::Scale(s) => s,
+                    };
+                    self.zoom_mode = ZoomMode::Scale((cur * 0.8).max(0.15));
+                }
+
+                let zoom_display = match self.zoom_mode {
+                    ZoomMode::Fit => "Fit".to_string(),
+                    ZoomMode::Scale(s) if (s - 0.5).abs() < 0.02 => "50%".to_string(),
+                    ZoomMode::Scale(s) if (s - 1.0).abs() < 0.02 => "100% (1:1)".to_string(),
+                    ZoomMode::Scale(s) if (s - 2.0).abs() < 0.02 => "200%".to_string(),
+                    ZoomMode::Scale(s) => format!("{:.0}%", s * 100.0),
                 };
-                let status_col = if is_realtime {
-                    Color32::from_rgb(34, 197, 94) // Studio Green
-                } else {
-                    Color32::from_rgb(234, 179, 8) // Warning Gold
-                };
-                ui.label(RichText::new(status_text).strong().size(12.0).color(status_col));
+
+                egui::ComboBox::from_id_salt("player_zoom_select")
+                    .selected_text(RichText::new(format!("🔍 {}", zoom_display)).small())
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(self.zoom_mode == ZoomMode::Fit, "⛶ Fit to Viewport [Z]").clicked() {
+                            self.zoom_mode = ZoomMode::Fit;
+                            self.pan_offset = Vec2::ZERO;
+                        }
+                        if ui.selectable_label(matches!(self.zoom_mode, ZoomMode::Scale(s) if (s - 0.5).abs() < 0.02), "50% Half").clicked() {
+                            self.zoom_mode = ZoomMode::Scale(0.5);
+                        }
+                        if ui.selectable_label(matches!(self.zoom_mode, ZoomMode::Scale(s) if (s - 1.0).abs() < 0.02), "100% (1:1 Native Pixel) [Z]").clicked() {
+                            self.zoom_mode = ZoomMode::Scale(1.0);
+                        }
+                        if ui.selectable_label(matches!(self.zoom_mode, ZoomMode::Scale(s) if (s - 2.0).abs() < 0.02), "200% (2:1 Peep)").clicked() {
+                            self.zoom_mode = ZoomMode::Scale(2.0);
+                        }
+                    });
+
+                let is_fit = self.zoom_mode == ZoomMode::Fit;
+                if ui.selectable_label(is_fit, RichText::new("⛶ Fit").small()).on_hover_text("Fit frame to canvas [Z]").clicked() {
+                    self.zoom_mode = ZoomMode::Fit;
+                    self.pan_offset = Vec2::ZERO;
+                }
 
                 ui.separator();
-                ui.label(RichText::new("🚀 GPU Debayer: Direct").small().color(Color32::from_rgb(96, 165, 250)));
+
+                // Exposure EV Slider with quick reset
+                if self.exposure_ev != 0.0 && ui.small_button("↺").on_hover_text("Reset Exposure [0]").clicked() {
+                    self.exposure_ev = 0.0;
+                }
+                ui.add(
+                    egui::Slider::new(&mut self.exposure_ev, -2.5..=2.5)
+                        .text("EV")
+                        .step_by(0.1)
+                        .show_value(true),
+                );
+
+                ui.separator();
+
+                // White Balance Tint Slider (Green <-> Magenta)
+                if self.wb_tint != 0.0 && ui.small_button("↺").on_hover_text("Reset Tint [0]").clicked() {
+                    self.wb_tint = 0.0;
+                }
+                ui.add(
+                    egui::Slider::new(&mut self.wb_tint, -50.0..=50.0)
+                        .text("Tint")
+                        .step_by(1.0)
+                        .show_value(true),
+                );
+
+                // White Balance Temperature Slider (Cool <-> Warm)
+                if self.wb_temperature != 0.0 && ui.small_button("↺").on_hover_text("Reset Temperature [0]").clicked() {
+                    self.wb_temperature = 0.0;
+                }
+                ui.add(
+                    egui::Slider::new(&mut self.wb_temperature, -50.0..=50.0)
+                        .text("WB")
+                        .step_by(1.0)
+                        .show_value(true),
+                );
             });
         });
 
@@ -171,8 +292,7 @@ impl PlayerView {
 
         if self.is_playing {
             // Buffer-paced playback engine:
-            // Ensure we have at least 1-2 frames ahead before advancing smoothly at native video frame rate.
-            // When caught up with decode speed, wait for the frame rather than flashing a blank screen.
+            // Smoothly advances at the native recorded frame rate.
             let next_target = if self.current_frame + 1 < total_frames {
                 self.current_frame + 1
             } else if self.is_looping {
@@ -181,27 +301,33 @@ impl PlayerView {
                 self.current_frame
             };
 
-            let can_advance = playback.is_ready(next_target);
-            if can_advance && self.last_frame_time.elapsed() >= frame_duration {
-                self.last_frame_time = Instant::now();
-                if self.current_frame + 1 < total_frames {
-                    self.current_frame += 1;
-                } else if self.is_looping {
-                    self.current_frame = 0;
-                } else {
-                    self.is_playing = false;
+            let elapsed = self.last_frame_time.elapsed();
+            if elapsed >= frame_duration {
+                // If next frame is ready or we've waited up to 1.5x frame duration, advance!
+                let is_ready = playback.is_ready(next_target);
+                if is_ready || elapsed >= frame_duration + std::time::Duration::from_millis(15) {
+                    self.last_frame_time = Instant::now();
+                    if self.current_frame + 1 < total_frames {
+                        self.current_frame += 1;
+                    } else if self.is_looping {
+                        self.current_frame = 0;
+                    } else {
+                        self.is_playing = false;
+                    }
+                    action = Some(PlayerAction::Seek(self.current_frame));
                 }
-                action = Some(PlayerAction::Seek(self.current_frame));
             }
             ui.ctx().request_repaint();
         }
 
         // 2. Main Viewport Canvas (Cinema Screen)
-        // Reserve 88px for the bottom professional timeline & transport bar
-        let available_size = ui.available_size() - Vec2::new(0.0, 92.0);
-        let (rect, _response) = ui.allocate_exact_size(available_size, egui::Sense::hover());
+        // Reserve exactly 86.0px for the bottom professional timeline & transport bar
+        let bottom_height = 86.0;
+        let canvas_height = (ui.available_height() - bottom_height).max(50.0);
+        let canvas_size = Vec2::new(ui.available_width(), canvas_height);
+        let (rect, canvas_response) = ui.allocate_exact_size(canvas_size, egui::Sense::click_and_drag());
 
-        let painter = ui.painter();
+        let painter = ui.painter().with_clip_rect(rect);
         painter.rect_filled(rect, Rounding::ZERO, Color32::from_rgb(10, 10, 12));
 
         // Calculate aspect-ratio preserved display rect respecting anamorphic de-squeeze
@@ -212,22 +338,70 @@ impl PlayerView {
             16.0 / 9.0
         };
 
-        let (display_w, display_h) = if self.zoom_100 {
-            // 1:1 pixel size with horizontal stretch applied
-            (video.width as f32 * stretch, video.height as f32)
-        } else {
-            // Fit to available viewport
-            let mut dw = rect.width();
-            let mut dh = dw / aspect;
-            if dh > rect.height() {
-                dh = rect.height();
-                dw = dh * aspect;
+        // Fit dimensions: maximum rectangle inside canvas `rect` preserving aspect ratio
+        let mut fit_w = rect.width();
+        let mut fit_h = fit_w / aspect;
+        if fit_h > rect.height() {
+            fit_h = rect.height();
+            fit_w = fit_h * aspect;
+        }
+
+        // Double-click canvas toggles Fit <-> 100%
+        if canvas_response.double_clicked() {
+            if self.zoom_mode == ZoomMode::Fit {
+                self.zoom_mode = ZoomMode::Scale(1.0);
+                self.pan_offset = Vec2::ZERO;
+            } else {
+                self.zoom_mode = ZoomMode::Fit;
+                self.pan_offset = Vec2::ZERO;
             }
-            (dw, dh)
+        }
+
+        // Mouse scroll wheel zooms in / out
+        let scroll_delta = ui.input(|i| i.raw_scroll_delta.y);
+        if canvas_response.hovered() && scroll_delta.abs() > 0.5 {
+            let current_scale = match self.zoom_mode {
+                ZoomMode::Fit => fit_w / (video.width as f32 * stretch).max(1.0),
+                ZoomMode::Scale(s) => s,
+            };
+            let zoom_factor = if scroll_delta > 0.0 { 1.12 } else { 0.89 };
+            let new_scale = (current_scale * zoom_factor).clamp(0.15, 8.0);
+            self.zoom_mode = ZoomMode::Scale(new_scale);
+        }
+
+        // Current display dimensions based on zoom mode
+        let (display_w, display_h) = match self.zoom_mode {
+            ZoomMode::Fit => (fit_w, fit_h),
+            ZoomMode::Scale(scale) => {
+                (video.width as f32 * stretch * scale, video.height as f32 * scale)
+            }
         };
 
-        let center = rect.center();
-        let display_rect = Rect::from_center_size(center, Vec2::new(display_w, display_h));
+        // Pan handling when zoomed in
+        if matches!(self.zoom_mode, ZoomMode::Scale(_)) {
+            if canvas_response.dragged() {
+                self.pan_offset += canvas_response.drag_delta();
+            }
+            if canvas_response.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            } else if canvas_response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+            }
+        } else {
+            self.pan_offset = Vec2::ZERO;
+        }
+
+        // Clamp pan offset so footage remains visible within the canvas
+        let max_pan_x = (display_w - rect.width()).max(0.0) * 0.5 + 80.0;
+        let max_pan_y = (display_h - rect.height()).max(0.0) * 0.5 + 80.0;
+        self.pan_offset.x = self.pan_offset.x.clamp(-max_pan_x, max_pan_x);
+        self.pan_offset.y = self.pan_offset.y.clamp(-max_pan_y, max_pan_y);
+
+        let display_center = rect.center() + self.pan_offset;
+        let display_rect = Rect::from_center_size(display_center, Vec2::new(display_w, display_h));
+
+        // Strictly bound the rendering viewport callback inside canvas `rect` to eliminate overflow
+        let cb_rect = display_rect.intersect(rect);
 
         // Fetch current frame or fallback to last displayed frame (prevents flickering during scrub/buffer)
         let frame_to_show = if let Some(frame) = playback.get(self.current_frame) {
@@ -239,38 +413,66 @@ impl PlayerView {
 
         // Render decoded frame via GPU WGSL shader callback
         if let Some(frame) = frame_to_show {
-            let m = camera_to_srgb(&playback.source.clip.meta);
-            let (rx, ry) = playback.source.clip.meta.red_offset();
-            let exp_mult = (2.0f32).powf(self.exposure_ev);
+            if cb_rect.width() > 0.5 && cb_rect.height() > 0.5 {
+                // Calculate visible texture sub-rectangle in normalized coordinates [0..1]
+                let u_start = (cb_rect.min.x - display_rect.min.x) / display_rect.width().max(1.0);
+                let v_start = (cb_rect.min.y - display_rect.min.y) / display_rect.height().max(1.0);
+                let u_size = cb_rect.width() / display_rect.width().max(1.0);
+                let v_size = cb_rect.height() / display_rect.height().max(1.0);
 
-            let uniforms = ViewUniforms {
-                m0: [m[0][0], m[0][1], m[0][2], 0.0],
-                m1: [m[1][0], m[1][1], m[1][2], 0.0],
-                m2: [m[2][0], m[2][1], m[2][2], 0.0],
-                levels: [frame.black, frame.white, exp_mult, 1.0],
-                info: [rx, ry, frame.width, frame.height],
-                view: [0.0, 0.0, 1.0, 1.0],
-            };
+                let mut m = camera_to_srgb(&playback.source.clip.meta);
 
-            let key = (video.id as u64) << 32 | (frame.index as u64);
-            let cb = RawViewCallback {
-                frame,
-                key,
-                uniforms,
-            };
+                // Apply White Balance gains (Temperature & Tint)
+                let t = self.wb_temperature / 50.0;
+                let r_gain = (2.0f32).powf(t * 0.45);
+                let b_gain = (2.0f32).powf(-t * 0.45);
 
-            let paint_cb = egui_wgpu::Callback::new_paint_callback(display_rect, cb);
-            painter.add(paint_cb);
+                let g = self.wb_tint / 50.0;
+                let g_gain = (2.0f32).powf(-g * 0.45);
+
+                for row in &mut m {
+                    row[0] *= r_gain;
+                    row[1] *= g_gain;
+                    row[2] *= b_gain;
+                }
+
+                let (rx, ry) = playback.source.clip.meta.red_offset();
+                let exp_mult = (2.0f32).powf(self.exposure_ev);
+
+                let uniforms = ViewUniforms {
+                    m0: [m[0][0], m[0][1], m[0][2], 0.0],
+                    m1: [m[1][0], m[1][1], m[1][2], 0.0],
+                    m2: [m[2][0], m[2][1], m[2][2], 0.0],
+                    levels: [frame.black, frame.white, exp_mult, 1.0],
+                    info: [rx, ry, frame.width, frame.height],
+                    view: [
+                        u_start.clamp(0.0, 1.0),
+                        v_start.clamp(0.0, 1.0),
+                        u_size.clamp(0.0, 1.0),
+                        v_size.clamp(0.0, 1.0),
+                    ],
+                };
+
+                let key = (video.id as u64) << 32 | (frame.index as u64);
+                let cb = RawViewCallback {
+                    frame,
+                    key,
+                    uniforms,
+                };
+
+                let paint_cb = egui_wgpu::Callback::new_paint_callback(cb_rect, cb);
+                painter.add(paint_cb);
+            }
         } else {
             // Initial placeholder before first frame completes decode
             painter.rect(
-                display_rect,
+                display_rect.intersect(rect),
                 Rounding::ZERO,
                 Color32::from_rgb(16, 16, 20),
                 Stroke::new(1.0_f32, BORDER_SUBTLE),
             );
             painter.text(
-                center,
+                rect.center(),
                 egui::Align2::CENTER_CENTER,
                 format!("⏳ Pre-buffering Clip..."),
                 egui::FontId::proportional(15.0),
