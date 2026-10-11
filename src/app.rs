@@ -445,6 +445,11 @@ impl eframe::App for MlvExplorerApp {
                                                 let _ = self.db.set_flag(id, flag);
                                                 self.reload_catalog();
                                             }
+                                            PlayerAction::SetStretch(factor) => {
+                                                let id = vid.id;
+                                                let _ = self.db.set_stretch_factor(id, factor);
+                                                self.reload_catalog();
+                                            }
                                         }
                                     }
                                 }

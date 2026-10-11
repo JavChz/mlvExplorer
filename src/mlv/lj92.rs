@@ -2,7 +2,7 @@
 //! Magic Lantern uses for compressed MLV. Output is written linearly
 //! (row-major, components interleaved), which matches the raw Bayer layout.
 
-const LUT_BITS: u32 = 10;
+const LUT_BITS: u32 = 12;
 
 struct Huffman {
     lut: Vec<u16>, // (len << 8) | symbol ; len == 0 => slow path

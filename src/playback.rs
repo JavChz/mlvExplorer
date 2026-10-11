@@ -31,8 +31,8 @@ impl Playback {
     pub fn new(source: Arc<FrameSource>, ctx: egui::Context) -> Self {
         let m = &source.clip.meta;
         let frame_bytes = (m.width as usize * m.height as usize * 2).max(1);
-        // ~768 MB budget for read-ahead
-        let ahead = (768 * 1024 * 1024 / frame_bytes).clamp(6, 64);
+        // ~1.5 GB budget for read-ahead buffer so playback never starves
+        let ahead = (1536 * 1024 * 1024 / frame_bytes).clamp(12, 120);
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 target: 0,
@@ -49,8 +49,7 @@ impl Playback {
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4)
-            .saturating_sub(1)
-            .clamp(2, 12);
+            .clamp(4, 16);
         for _ in 0..threads {
             let shared = shared.clone();
             let source = source.clone();

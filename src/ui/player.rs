@@ -13,6 +13,7 @@ pub enum PlayerAction {
     Seek(usize),
     SetRating(u8),
     SetFlag(PickFlag),
+    SetStretch(f32),
 }
 
 pub struct PlayerView {
@@ -77,7 +78,7 @@ impl PlayerView {
                 ui.label(RichText::new(&video.camera_name).small().color(TEXT_MUTED));
             }
 
-            // Right-aligned Toolbar: Zoom, Exposure, Decode Perf
+            // Right-aligned Toolbar: De-Squeeze, Zoom, Exposure, Decode Perf
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Exposure EV with quick reset
                 if self.exposure_ev != 0.0 && ui.small_button("↺ 0").clicked() {
@@ -101,6 +102,40 @@ impl PlayerView {
 
                 ui.separator();
 
+                // Anamorphic De-Squeeze (Stretch Factor) Dropdown
+                let cur_stretch = video.stretch_factor;
+                let stretch_name = match cur_stretch {
+                    s if (s - 3.0).abs() < 0.05 => "3.0x (1x3 Anamorphic)",
+                    s if (s - 2.0).abs() < 0.05 => "2.0x Anamorphic",
+                    s if (s - 1.75).abs() < 0.05 => "1.75x Anamorphic",
+                    s if (s - 1.5).abs() < 0.05 => "1.5x Anamorphic",
+                    s if (s - 1.333).abs() < 0.05 => "1.33x Anamorphic",
+                    s if (s - 0.333).abs() < 0.05 => "0.33x (3x1)",
+                    s if (s - 1.0).abs() < 0.05 => "1.0x (1:1 Square)",
+                    s => &format!("{:.2}x", s),
+                };
+
+                egui::ComboBox::from_id_salt("player_desqueeze_select")
+                    .selected_text(RichText::new(format!("Stretch: {}", stretch_name)).small())
+                    .show_ui(ui, |ui| {
+                        for (factor, label) in [
+                            (1.0f32, "1.0x (1:1 Square - Off)"),
+                            (3.0f32, "3.0x (1x3 Anamorphic / EOS M Crop Mood)"),
+                            (2.0f32, "2.0x (Standard 2x Anamorphic)"),
+                            (1.75f32, "1.75x Anamorphic"),
+                            (1.5f32, "1.5x Anamorphic"),
+                            (1.333f32, "1.33x Anamorphic"),
+                            (0.333f32, "0.33x (3x1 Binning)"),
+                        ] {
+                            let is_sel = (cur_stretch - factor).abs() < 0.02;
+                            if ui.selectable_label(is_sel, label).clicked() {
+                                action = Some(PlayerAction::SetStretch(factor));
+                            }
+                        }
+                    });
+
+                ui.separator();
+
                 // Decoder Performance
                 let dec_fps = playback.decode_fps();
                 let dec_col = if dec_fps >= video.fps {
@@ -121,15 +156,29 @@ impl PlayerView {
         let frame_duration = std::time::Duration::from_secs_f32(1.0 / effective_fps);
 
         if self.is_playing && self.last_frame_time.elapsed() >= frame_duration {
-            self.last_frame_time = Instant::now();
-            if self.current_frame + 1 < total_frames {
-                self.current_frame += 1;
+            // Buffer-aware pacing: If the next frame is ready or already cached, advance.
+            // If it's not ready yet, do not jump ahead and skip frames; wait up to a short threshold
+            // so playback never stutters or drops frames unnecessarily!
+            let next_target = if self.current_frame + 1 < total_frames {
+                self.current_frame + 1
             } else if self.is_looping {
-                self.current_frame = 0;
+                0
             } else {
-                self.is_playing = false;
+                self.current_frame
+            };
+
+            let is_next_ready = playback.is_ready(next_target);
+            if is_next_ready || self.last_frame_time.elapsed() >= frame_duration * 3 {
+                self.last_frame_time = Instant::now();
+                if self.current_frame + 1 < total_frames {
+                    self.current_frame += 1;
+                } else if self.is_looping {
+                    self.current_frame = 0;
+                } else {
+                    self.is_playing = false;
+                }
+                action = Some(PlayerAction::Seek(self.current_frame));
             }
-            action = Some(PlayerAction::Seek(self.current_frame));
             ui.ctx().request_repaint();
         }
 
@@ -141,16 +190,17 @@ impl PlayerView {
         let painter = ui.painter();
         painter.rect_filled(rect, Rounding::ZERO, Color32::from_rgb(10, 10, 12));
 
-        // Calculate aspect-ratio preserved display rect
+        // Calculate aspect-ratio preserved display rect respecting anamorphic de-squeeze
+        let stretch = if video.stretch_factor > 0.05 { video.stretch_factor } else { 1.0 };
         let aspect = if video.height > 0 {
-            video.width as f32 / video.height as f32
+            (video.width as f32 * stretch) / video.height as f32
         } else {
             16.0 / 9.0
         };
 
         let (display_w, display_h) = if self.zoom_100 {
-            // 1:1 pixel size
-            (video.width as f32, video.height as f32)
+            // 1:1 pixel size with horizontal stretch applied
+            (video.width as f32 * stretch, video.height as f32)
         } else {
             // Fit to available viewport
             let mut dw = rect.width();

@@ -223,6 +223,38 @@ impl Inspector {
                     ui.label(format!("{} × {}", vid.width, vid.height));
                     ui.end_row();
 
+                    ui.label("Aspect Stretch:");
+                    let cur_s = vid.stretch_factor;
+                    let s_label = match cur_s {
+                        s if (s - 3.0).abs() < 0.05 => "3.0x (1x3 Anamorphic)",
+                        s if (s - 2.0).abs() < 0.05 => "2.0x Anamorphic",
+                        s if (s - 1.75).abs() < 0.05 => "1.75x Anamorphic",
+                        s if (s - 1.5).abs() < 0.05 => "1.5x Anamorphic",
+                        s if (s - 1.333).abs() < 0.05 => "1.33x Anamorphic",
+                        s if (s - 0.333).abs() < 0.05 => "0.33x (3x1)",
+                        _ => "1.0x (Square)",
+                    };
+                    egui::ComboBox::from_id_salt(format!("insp_stretch_{}", vid.id))
+                        .selected_text(s_label)
+                        .show_ui(ui, |ui| {
+                            for (factor, label) in [
+                                (1.0f32, "1.0x (1:1 Square)"),
+                                (3.0f32, "3.0x (1x3 Anamorphic)"),
+                                (2.0f32, "2.0x Anamorphic"),
+                                (1.75f32, "1.75x Anamorphic"),
+                                (1.5f32, "1.5x Anamorphic"),
+                                (1.333f32, "1.33x Anamorphic"),
+                                (0.333f32, "0.33x (3x1 Binning)"),
+                            ] {
+                                let is_sel = (cur_s - factor).abs() < 0.02;
+                                if ui.selectable_label(is_sel, label).clicked() {
+                                    vid.stretch_factor = factor;
+                                    let _ = db.set_stretch_factor(vid.id, factor);
+                                }
+                            }
+                        });
+                    ui.end_row();
+
                     ui.label("Frame Rate:");
                     ui.label(format!("{:.3} fps", vid.fps));
                     ui.end_row();

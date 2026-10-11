@@ -38,6 +38,9 @@ pub struct MlvMetadata {
     pub shutter_speed_microseconds: u32,
     pub white_balance_kelvin: u32,
     pub date_recorded: Option<String>,
+    pub binning_x: u16,
+    pub binning_y: u16,
+    pub pixel_aspect_ratio: f32,
 }
 
 impl MlvMetadata {
@@ -63,6 +66,41 @@ impl MlvMetadata {
         } else {
             format!("RAW {}-bit Uncompressed", self.bits_per_pixel)
         }
+    }
+
+    /// Auto-detect aspect ratio / stretch factor for Magic Lantern anamorphic & binning modes.
+    /// Handles 1x3 binning (EOS M crop mood), 3x1 binning, or user explicit ratios.
+    pub fn default_stretch(&self) -> f32 {
+        if self.pixel_aspect_ratio > 0.05 && (self.pixel_aspect_ratio - 1.0).abs() > 0.01 {
+            return self.pixel_aspect_ratio;
+        }
+
+        // Check if RAWC indicated binning
+        if self.binning_x > 0 && self.binning_y > 0 && self.binning_x != self.binning_y {
+            let ratio = self.binning_y as f32 / self.binning_x as f32;
+            if (ratio - 3.0).abs() < 0.1 {
+                return 3.0; // 1x3 mode: sensor binned 3x horizontally -> 3x horizontal stretch
+            } else if (ratio - (1.0 / 3.0)).abs() < 0.05 {
+                return 0.3333;
+            }
+            return ratio;
+        }
+
+        // Geometric heuristics based on captured raw sensor dimensions:
+        // In Magic Lantern 1x3 anamorphic mode, typical recorded resolutions have
+        // height noticeably larger relative to width than standard 16:9, e.g.:
+        // 720x1280 (becomes 2160x1280 16:9), 1736x2340, 1280x2160, 1024x1728
+        // or very squished width-to-height ratios < 1.0 or ~0.5-0.8.
+        if self.width > 0 && self.height > 0 {
+            let raw_ar = self.width as f32 / self.height as f32;
+            // A raw video ratio around 0.5 to 0.9 almost always indicates a 1x3 horizontal squeeze
+            // because stretching by 3.0 yields a cinematic 1.6:1 - 2.4:1 aspect ratio!
+            if raw_ar > 0.40 && raw_ar < 0.95 {
+                return 3.0;
+            }
+        }
+
+        1.0
     }
 
     /// Position of the red pixel inside the 2x2 Bayer quad: (rx, ry)

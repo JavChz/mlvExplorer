@@ -49,7 +49,13 @@ pub struct VideoRecord {
     pub has_audio: bool,
     #[serde(default)]
     pub chunk_count: u16,
+    #[serde(default = "default_stretch_factor")]
+    pub stretch_factor: f32,
     pub tags: Vec<String>,
+}
+
+fn default_stretch_factor() -> f32 {
+    1.0
 }
 
 impl VideoRecord {

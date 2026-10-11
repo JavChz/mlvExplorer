@@ -178,7 +178,7 @@ fn scan_chunk(
                     break;
                 }
             }
-            b"MLVI" | b"RAWI" | b"IDNT" | b"LENS" | b"EXPO" | b"RTCI" | b"WBAL" => {
+            b"MLVI" | b"RAWI" | b"RAWC" | b"IDNT" | b"LENS" | b"EXPO" | b"RTCI" | b"WBAL" | b"DISP" => {
                 buf.clear();
                 buf.extend_from_slice(&hdr);
                 buf.resize(size as usize, 0);
@@ -336,6 +336,32 @@ fn parse_meta_block(ty: &[u8; 4], b: &[u8], m: &mut MlvMetadata, is_main: bool) 
             let kelvin = r.u32();
             if m.white_balance_kelvin == 0 {
                 m.white_balance_kelvin = kelvin;
+            }
+        }
+        b"RAWC" => {
+            // mlv_rawc_hdr_t
+            let _sensor_res_x = r.u16();
+            let _sensor_res_y = r.u16();
+            let _sensor_crop = r.u16();
+            let _reserved = r.u16();
+            let bin_x = r.u8() as u16;
+            let _skip_x = r.u8();
+            let bin_y = r.u8() as u16;
+            let _skip_y = r.u8();
+            if bin_x > 0 {
+                m.binning_x = bin_x;
+            }
+            if bin_y > 0 {
+                m.binning_y = bin_y;
+            }
+        }
+        b"DISP" => {
+            // Display / aspect ratio block if present
+            let _mode = r.u32();
+            let num = r.u32();
+            let den = r.u32();
+            if num > 0 && den > 0 {
+                m.pixel_aspect_ratio = num as f32 / den as f32;
             }
         }
         _ => {}

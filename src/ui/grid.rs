@@ -111,10 +111,29 @@ impl GridView {
                         let thumb_tex = thumb_mgr.get_or_request(vid.id, &vid.file_path);
 
                         if let Some(tex) = thumb_tex {
-                            // Paint real MLV frame 0 decoded thumbnail
+                            // Calculate display rect respecting anamorphic de-squeeze
+                            let stretch = if vid.stretch_factor > 0.05 { vid.stretch_factor } else { 1.0 };
+                            let video_ar = if vid.height > 0 {
+                                (vid.width as f32 * stretch) / vid.height as f32
+                            } else {
+                                16.0 / 9.0
+                            };
+
+                            let mut fit_w = thumb_rect.width();
+                            let mut fit_h = fit_w / video_ar;
+                            if fit_h > thumb_rect.height() {
+                                fit_h = thumb_rect.height();
+                                fit_w = fit_h * video_ar;
+                            }
+                            let fitted_rect = Rect::from_center_size(thumb_rect.center(), Vec2::new(fit_w, fit_h));
+
+                            // Dark background for pillarbox/letterbox
+                            painter.rect_filled(thumb_rect, Rounding::same(4.0), Color32::from_rgb(10, 10, 14));
+
+                            // Paint real MLV frame 0 decoded thumbnail fitted & de-squeezed
                             painter.image(
                                 tex.id(),
-                                thumb_rect,
+                                fitted_rect,
                                 Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
                                 Color32::WHITE,
                             );

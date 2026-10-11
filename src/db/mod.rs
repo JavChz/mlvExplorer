@@ -102,6 +102,7 @@ impl Database {
             "ALTER TABLE videos ADD COLUMN codec TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE videos ADD COLUMN has_audio INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE videos ADD COLUMN chunk_count INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE videos ADD COLUMN stretch_factor REAL NOT NULL DEFAULT 1.0",
         ] {
             let _ = self.conn.execute(sql, []);
         }
@@ -124,6 +125,7 @@ impl Database {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| meta.file_path.clone());
         let imported_at = chrono::Local::now().to_rfc3339();
+        let stretch = meta.default_stretch();
 
         self.conn.query_row(
             r#"
@@ -132,8 +134,8 @@ impl Database {
                 frame_count, duration_seconds, bits_per_pixel, camera_name,
                 camera_serial, lens_name, focal_length_mm, aperture_fstop,
                 iso, shutter_speed, white_balance_kelvin, date_recorded,
-                imported_at, codec, has_audio, chunk_count
-            ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)
+                imported_at, codec, has_audio, chunk_count, stretch_factor
+            ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)
             ON CONFLICT(file_path) DO UPDATE SET
                 file_name = excluded.file_name,
                 file_size = excluded.file_size,
@@ -154,7 +156,8 @@ impl Database {
                 date_recorded = excluded.date_recorded,
                 codec = excluded.codec,
                 has_audio = excluded.has_audio,
-                chunk_count = excluded.chunk_count
+                chunk_count = excluded.chunk_count,
+                stretch_factor = CASE WHEN videos.stretch_factor = 1.0 AND excluded.stretch_factor != 1.0 THEN excluded.stretch_factor ELSE videos.stretch_factor END
             RETURNING id
             "#,
             params![
@@ -180,6 +183,7 @@ impl Database {
                 meta.codec_name(),
                 meta.has_audio,
                 meta.chunk_count,
+                stretch,
             ],
             |r| r.get(0),
         )
@@ -193,7 +197,7 @@ impl Database {
                    v.camera_name, v.camera_serial, v.lens_name, v.focal_length_mm,
                    v.aperture_fstop, v.iso, v.shutter_speed, v.white_balance_kelvin,
                    v.date_recorded, v.imported_at, v.rating, v.flag, v.notes, v.color_label,
-                   v.codec, v.has_audio, v.chunk_count,
+                   v.codec, v.has_audio, v.chunk_count, v.stretch_factor,
                    (SELECT GROUP_CONCAT(t.name, '\u001f') FROM video_tags vt JOIN tags t ON t.id = vt.tag_id WHERE vt.video_id = v.id) AS tags
             FROM videos v
             WHERE 1=1
@@ -241,7 +245,7 @@ impl Database {
         let mut stmt = self.conn.prepare(&query)?;
         let refs: Vec<&dyn rusqlite::ToSql> = p.iter().map(|b| b.as_ref()).collect();
         let rows = stmt.query_map(refs.as_slice(), |row| {
-            let tags: Option<String> = row.get(27)?;
+            let tags: Option<String> = row.get(28)?;
             Ok(VideoRecord {
                 id: row.get(0)?,
                 file_path: row.get(1)?,
@@ -270,12 +274,18 @@ impl Database {
                 codec: row.get(24)?,
                 has_audio: row.get::<_, i64>(25)? != 0,
                 chunk_count: row.get(26)?,
+                stretch_factor: row.get::<_, Option<f64>>(27)?.map(|v| v as f32).unwrap_or(1.0),
                 tags: tags
                     .map(|s| s.split('\u{1f}').map(|t| t.to_string()).collect())
                     .unwrap_or_default(),
             })
         })?;
         rows.collect()
+    }
+
+    pub fn set_stretch_factor(&self, video_id: i64, stretch: f32) -> Result<()> {
+        self.conn.execute("UPDATE videos SET stretch_factor = ?1 WHERE id = ?2", params![stretch as f64, video_id])?;
+        Ok(())
     }
 
     pub fn all_paths(&self) -> Result<Vec<String>> {
@@ -443,6 +453,9 @@ impl Database {
             let _ = self.set_rating(row_id, vid.rating);
             let _ = self.set_flag(row_id, vid.flag);
             let _ = self.set_notes(row_id, &vid.notes);
+            if vid.stretch_factor > 0.05 {
+                let _ = self.set_stretch_factor(row_id, vid.stretch_factor);
+            }
             for t in &vid.tags {
                 let _ = self.add_tag(row_id, t);
             }
