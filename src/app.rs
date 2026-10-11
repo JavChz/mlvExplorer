@@ -1,10 +1,10 @@
-use crate::db::{Database, FilterCriteria, PickFlag, VideoRecord};
-use crate::mlv::MlvReader;
-use crate::ui::{
-    catalog_modal::CatalogModal, filter_bar::FilterBar, grid_view::{GridAction, GridView},
-    metadata_panel::MetadataPanel, player_view::{PlayerAction, PlayerView},
-};
-use eframe::egui;
+use crate::db::{default_catalog_path, Database, Facets, FilterCriteria, PickFlag, VideoRecord};
+use crate::gpu;
+use crate::mlv::{FrameSource, MlvClip};
+use crate::playback::Playback;
+use crate::thumbnails::ThumbnailManager;
+use crate::ui::*;
+use eframe::egui::{self, RichText};
 use std::path::Path;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -19,29 +19,43 @@ pub struct MlvExplorerApp {
     videos: Vec<VideoRecord>,
     selected_video_idx: Option<usize>,
     filter: FilterCriteria,
+    facets: Facets,
+    all_tags: Vec<String>,
     cameras: Vec<String>,
     lenses: Vec<String>,
 
-    // UI components
+    // Media & Playback
+    thumb_mgr: ThumbnailManager,
+    current_playback: Option<(i64, Playback)>, // (video_id, Playback)
+
+    // UI Panels & Windows
     grid_view: GridView,
     player_view: PlayerView,
-    metadata_panel: MetadataPanel,
-    catalog_modal: CatalogModal,
+    inspector: Inspector,
+    catalog_dialog: CatalogDialog,
 
-    // Layout toggles
-    show_left_sidebar: bool,
-    show_right_sidebar: bool,
-    show_filter_bar: bool,
-    
-    // Status bar notification
+    // Status bar & notification
+    gpu_info: String,
     status_bar_text: String,
 }
 
 impl MlvExplorerApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        // Open or create SQLite catalog database in user config / local app folder
-        let db_path = "mlv_catalog.db";
-        let db = Database::open(db_path).expect("Failed to open SQLite database");
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // Apply professional dark studio theme
+        theme::apply_theme(&cc.egui_ctx);
+
+        // Initialize GPU debayer shaders via wgpu
+        let gpu_info = if let Some(render_state) = &cc.wgpu_render_state {
+            gpu::init(render_state)
+        } else {
+            "Software Viewport".to_string()
+        };
+
+        // Open SQLite catalog
+        let db_path = default_catalog_path();
+        let db = Database::open(&db_path).expect("Failed to initialize SQLite catalog");
+
+        let thumb_mgr = ThumbnailManager::new(db_path.clone(), cc.egui_ctx.clone());
 
         let mut app = Self {
             db,
@@ -49,23 +63,46 @@ impl MlvExplorerApp {
             videos: Vec::new(),
             selected_video_idx: None,
             filter: FilterCriteria::default(),
+            facets: Facets::default(),
+            all_tags: Vec::new(),
             cameras: Vec::new(),
             lenses: Vec::new(),
+            thumb_mgr,
+            current_playback: None,
             grid_view: GridView::default(),
             player_view: PlayerView::default(),
-            metadata_panel: MetadataPanel::default(),
-            catalog_modal: CatalogModal::default(),
-            show_left_sidebar: true,
-            show_right_sidebar: true,
-            show_filter_bar: true,
-            status_bar_text: "Ready. Drag and drop .MLV files to import.".to_string(),
+            inspector: Inspector::default(),
+            catalog_dialog: CatalogDialog::default(),
+            gpu_info,
+            status_bar_text: "Ready. Drag and drop .MLV files or folders to import.".to_string(),
         };
+
+        // If database was migrated from v1 (which had broken offsets), rescan all files
+        if app.db.needs_rescan {
+            app.rescan_all_files();
+        }
 
         app.reload_catalog();
         app
     }
 
-    /// Refresh catalog data from database
+    /// Rescan all files in catalog to correct corrupted metadata from previous versions
+    fn rescan_all_files(&mut self) {
+        if let Ok(paths) = self.db.all_paths() {
+            let mut count = 0;
+            for p in &paths {
+                if let Ok(clip) = MlvClip::open(p) {
+                    let _ = self.db.upsert_video(&clip.meta);
+                    count += 1;
+                }
+            }
+            if count > 0 {
+                self.status_bar_text = format!("Refreshed metadata for {} clips.", count);
+            }
+        }
+    }
+
+    /// Reload catalog data, facets, and filter criteria
     pub fn reload_catalog(&mut self) {
         if let Ok(videos) = self.db.get_videos(&self.filter) {
             self.videos = videos;
@@ -75,11 +112,64 @@ impl MlvExplorerApp {
                 }
             }
         }
-        if let Ok(cams) = self.db.get_cameras() {
-            self.cameras = cams;
+
+        if let Ok(facets) = self.db.facets() {
+            self.cameras = facets.cameras.iter().map(|c| c.name.clone()).collect();
+            self.lenses = facets.lenses.iter().map(|l| l.name.clone()).collect();
+            self.facets = facets;
         }
-        if let Ok(lenses) = self.db.get_lenses() {
-            self.lenses = lenses;
+
+        if let Ok(tags) = self.db.all_tag_names() {
+            self.all_tags = tags;
+        }
+
+        // Keep playback in sync with selected video
+        self.sync_playback();
+    }
+
+    /// Synchronize active video playback engine with the selected video
+    fn sync_playback(&mut self) {
+        let Some(idx) = self.selected_video_idx else {
+            self.current_playback = None;
+            return;
+        };
+
+        let Some(vid) = self.videos.get(idx) else {
+            self.current_playback = None;
+            return;
+        };
+
+        let current_id = self.current_playback.as_ref().map(|(id, _)| *id);
+        if current_id != Some(vid.id) {
+            self.current_playback = None;
+        }
+    }
+
+    /// Ensure active playback engine is loaded for current video
+    fn ensure_playback(&mut self, ctx: &egui::Context) -> bool {
+        let Some(idx) = self.selected_video_idx else { return false; };
+        let Some(vid) = self.videos.get(idx) else { return false; };
+
+        let needs_load = match &self.current_playback {
+            Some((id, _)) => *id != vid.id,
+            None => true,
+        };
+
+        if needs_load {
+            match FrameSource::open(&vid.file_path) {
+                Ok(source) => {
+                    let pb = Playback::new(source, ctx.clone());
+                    self.current_playback = Some((vid.id, pb));
+                    self.player_view.current_frame = 0;
+                    true
+                }
+                Err(e) => {
+                    self.status_bar_text = format!("Error opening MLV: {e}");
+                    false
+                }
+            }
+        } else {
+            true
         }
     }
 
@@ -110,9 +200,9 @@ impl MlvExplorerApp {
     }
 
     fn ingest_single_mlv(&mut self, path: &Path) -> bool {
-        match MlvReader::open(path) {
-            Ok(reader) => {
-                let _ = self.db.upsert_video(&reader.metadata);
+        match MlvClip::open(path) {
+            Ok(clip) => {
+                let _ = self.db.upsert_video(&clip.meta);
                 true
             }
             Err(e) => {
@@ -134,21 +224,42 @@ impl MlvExplorerApp {
         }
     }
 
-    /// Handle global Lightroom-like keyboard shortcuts
+    /// Global keyboard shortcuts
     fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
         let input = ctx.input(|i| i.clone());
 
-        // Switch views: G -> Grid, E -> Loupe/Player
+        // Mode switching: G -> Grid, E / Enter -> Player
         if input.key_pressed(egui::Key::G) {
             self.view_mode = ViewMode::Grid;
         }
-        if input.key_pressed(egui::Key::E) {
+        if input.key_pressed(egui::Key::E) || (self.view_mode == ViewMode::Grid && input.key_pressed(egui::Key::Enter)) {
             if self.selected_video_idx.is_some() {
                 self.view_mode = ViewMode::Player;
+                self.ensure_playback(ctx);
             }
         }
 
-        // Ratings 1..5, 0 to clear
+        // Navigation in Grid (Left / Right / Up / Down)
+        if self.view_mode == ViewMode::Grid && !self.videos.is_empty() {
+            if input.key_pressed(egui::Key::ArrowRight) {
+                if let Some(idx) = self.selected_video_idx {
+                    if idx + 1 < self.videos.len() {
+                        self.selected_video_idx = Some(idx + 1);
+                    }
+                } else {
+                    self.selected_video_idx = Some(0);
+                }
+            }
+            if input.key_pressed(egui::Key::ArrowLeft) {
+                if let Some(idx) = self.selected_video_idx {
+                    if idx > 0 {
+                        self.selected_video_idx = Some(idx - 1);
+                    }
+                }
+            }
+        }
+
+        // Rating & Flags shortcuts on selected video
         if let Some(idx) = self.selected_video_idx {
             if let Some(video) = self.videos.get_mut(idx) {
                 let mut rating_to_set = None;
@@ -184,165 +295,106 @@ impl MlvExplorerApp {
 
 impl eframe::App for MlvExplorerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.thumb_mgr.update(ctx);
         self.handle_drag_and_drop(ctx);
         self.handle_keyboard_shortcuts(ctx);
 
-        // Top Navigation & Menu Bar
-        egui::TopBottomPanel::top("top_menu_bar").show(ctx, |ui| {
-            egui::menu::bar(ui, |ui| {
-                ui.menu_button("📁 File", |ui| {
-                    if ui.button("Import MLV Files...").clicked() {
-                        ui.close_menu();
-                        if let Some(files) = rfd::FileDialog::new()
-                            .add_filter("Magic Lantern Video", &["mlv", "MLV"])
-                            .pick_files()
-                        {
-                            for f in files {
-                                self.ingest_path(&f);
+        // 1. Studio Top Bar
+        egui::TopBottomPanel::top("studio_top_bar")
+            .exact_height(38.0)
+            .show(ctx, |ui| {
+                let can_open_player = self.selected_video_idx.is_some();
+                let is_player_mode = self.view_mode == ViewMode::Player;
+
+                let (filter_changed, action) = TopBar::show(
+                    ui,
+                    &mut self.filter,
+                    is_player_mode,
+                    can_open_player,
+                    &self.cameras,
+                    &self.lenses,
+                );
+
+                if filter_changed {
+                    self.reload_catalog();
+                }
+
+                if let Some(act) = action {
+                    match act {
+                        TopBarAction::SwitchToGrid => {
+                            self.view_mode = ViewMode::Grid;
+                        }
+                        TopBarAction::SwitchToPlayer => {
+                            if self.selected_video_idx.is_some() {
+                                self.view_mode = ViewMode::Player;
+                                self.ensure_playback(ctx);
                             }
                         }
-                    }
-                    if ui.button("Import Folder...").clicked() {
-                        ui.close_menu();
-                        if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                            self.ingest_path(&folder);
+                        TopBarAction::ImportFiles => {
+                            if let Some(files) = rfd::FileDialog::new()
+                                .add_filter("Magic Lantern RAW Video", &["mlv", "MLV"])
+                                .pick_files()
+                            {
+                                for f in files {
+                                    self.ingest_path(&f);
+                                }
+                            }
+                        }
+                        TopBarAction::ImportFolder => {
+                            if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                                self.ingest_path(&folder);
+                            }
+                        }
+                        TopBarAction::OpenCatalogModal => {
+                            self.catalog_dialog.is_open = true;
                         }
                     }
-                    ui.separator();
-                    if ui.button("Backup & Import Catalog...").clicked() {
-                        ui.close_menu();
-                        self.catalog_modal.is_open = true;
-                    }
-                });
-
-                ui.menu_button("👁 View", |ui| {
-                    if ui.selectable_label(self.view_mode == ViewMode::Grid, "Grid View [G]").clicked() {
-                        self.view_mode = ViewMode::Grid;
-                        ui.close_menu();
-                    }
-                    if ui.selectable_label(self.view_mode == ViewMode::Player, "Loupe / Player [E]").clicked() {
-                        if self.selected_video_idx.is_some() {
-                            self.view_mode = ViewMode::Player;
-                        }
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    ui.checkbox(&mut self.show_left_sidebar, "Navigator (Left Sidebar)");
-                    ui.checkbox(&mut self.show_right_sidebar, "Metadata (Right Sidebar)");
-                    ui.checkbox(&mut self.show_filter_bar, "Filter Bar");
-                });
-
-                ui.separator();
-
-                // Quick View switcher pills
-                let grid_btn = ui.selectable_label(self.view_mode == ViewMode::Grid, "▦ Grid");
-                if grid_btn.clicked() {
-                    self.view_mode = ViewMode::Grid;
                 }
-                let player_btn = ui.selectable_label(self.view_mode == ViewMode::Player, "▶ Player");
-                if player_btn.clicked() && self.selected_video_idx.is_some() {
-                    self.view_mode = ViewMode::Player;
-                }
+            });
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("🗄 Catalog Backup").clicked() {
-                        self.catalog_modal.is_open = true;
-                    }
+        // 2. Status Bar (Bottom)
+        egui::TopBottomPanel::bottom("studio_status_bar")
+            .exact_height(24.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&self.status_bar_text).small().color(TEXT_MUTED));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new(&self.gpu_info).small().color(TEXT_MUTED));
+                        ui.separator();
+                        ui.label(RichText::new(format!("{} clips", self.videos.len())).small().color(TEXT_SECONDARY));
+                    });
                 });
             });
-        });
 
-        // Filter Bar (Top Sub-panel)
-        if self.show_filter_bar {
-            egui::TopBottomPanel::top("filter_bar_panel").show(ctx, |ui| {
-                if FilterBar::show(ui, &mut self.filter, &self.cameras, &self.lenses) {
+        // 3. Left Navigator Sidebar
+        egui::SidePanel::left("studio_left_navigator")
+            .default_width(220.0)
+            .width_range(180.0..=320.0)
+            .show(ctx, |ui| {
+                if Navigator::show(ui, &mut self.filter, &self.facets) {
                     self.reload_catalog();
                 }
             });
-        }
 
-        // Status Bar (Bottom Panel)
-        egui::TopBottomPanel::bottom("status_bar_panel").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(&self.status_bar_text).small());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new(format!("Total: {} videos", self.videos.len())).small());
-                });
+        // 4. Right Metadata Inspector Sidebar
+        egui::SidePanel::right("studio_right_inspector")
+            .default_width(280.0)
+            .width_range(240.0..=380.0)
+            .show(ctx, |ui| {
+                let mut sel_vid = self.selected_video_idx.and_then(|idx| self.videos.get_mut(idx));
+                self.inspector.show(ui, sel_vid.as_deref_mut(), &self.db, &self.all_tags);
             });
-        });
 
-        // Left Navigator Sidebar (Catalog, Quick Collections, Tags)
-        if self.show_left_sidebar {
-            egui::SidePanel::left("left_navigator_panel")
-                .default_width(200.0)
-                .width_range(160.0..=300.0)
-                .show(ctx, |ui| {
-                    ui.heading("Catalog");
-                    ui.separator();
-
-                    if ui.selectable_label(self.filter.flag.is_none() && self.filter.selected_tag.is_none(), "📂 All Videos").clicked() {
-                        self.filter.flag = None;
-                        self.filter.selected_tag = None;
-                        self.reload_catalog();
-                    }
-
-                    if ui.selectable_label(self.filter.flag == Some(PickFlag::Picked), "🏳 Picked / Flagged").clicked() {
-                        self.filter.flag = Some(PickFlag::Picked);
-                        self.reload_catalog();
-                    }
-
-                    if ui.selectable_label(self.filter.flag == Some(PickFlag::Rejected), "❌ Rejected").clicked() {
-                        self.filter.flag = Some(PickFlag::Rejected);
-                        self.reload_catalog();
-                    }
-
-                    if ui.selectable_label(self.filter.flag == Some(PickFlag::Unflagged), "⚪ Unflagged").clicked() {
-                        self.filter.flag = Some(PickFlag::Unflagged);
-                        self.reload_catalog();
-                    }
-
-                    ui.add_space(12.0);
-                    ui.heading("Quick Actions");
-                    ui.separator();
-                    if ui.button("📥 Import Videos...").clicked() {
-                        if let Some(files) = rfd::FileDialog::new()
-                            .add_filter("Magic Lantern Video", &["mlv", "MLV"])
-                            .pick_files()
-                        {
-                            for f in files {
-                                self.ingest_path(&f);
-                            }
-                        }
-                    }
-                    if ui.button("📁 Import Folder...").clicked() {
-                        if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                            self.ingest_path(&folder);
-                        }
-                    }
-
-                    ui.add_space(16.0);
-                    ui.heading("Shortcuts");
-                    ui.separator();
-                    ui.label(egui::RichText::new("G : Grid View\nE : Player View\nSpace : Play / Pause\n1-5 : Star Rating\nP : Pick Flag\nX : Reject Flag\nU : Unflag").small());
-                });
-        }
-
-        // Right Sidebar (Metadata & Tags Inspector)
-        if self.show_right_sidebar {
-            egui::SidePanel::right("right_metadata_panel")
-                .default_width(280.0)
-                .width_range(240.0..=400.0)
-                .show(ctx, |ui| {
-                    let mut selected_video = self.selected_video_idx.and_then(|idx| self.videos.get_mut(idx));
-                    self.metadata_panel.show(ui, selected_video.as_deref_mut(), &self.db);
-                });
-        }
-
-        // Central Workspace (Grid or Player View)
+        // 5. Central Workspace: Grid or Player View
         egui::CentralPanel::default().show(ctx, |ui| {
             match self.view_mode {
                 ViewMode::Grid => {
-                    if let Some(action) = self.grid_view.show(ui, &self.videos, self.selected_video_idx) {
+                    if let Some(action) = self.grid_view.show(
+                        ui,
+                        &self.videos,
+                        self.selected_video_idx,
+                        &mut self.thumb_mgr,
+                    ) {
                         match action {
                             GridAction::Select(idx) => {
                                 self.selected_video_idx = Some(idx);
@@ -350,12 +402,14 @@ impl eframe::App for MlvExplorerApp {
                             GridAction::OpenPlayer(idx) => {
                                 self.selected_video_idx = Some(idx);
                                 self.view_mode = ViewMode::Player;
+                                self.ensure_playback(ctx);
                             }
                             GridAction::TogglePick(id) => {
                                 if let Some(vid) = self.videos.iter_mut().find(|v| v.id == id) {
                                     let new_flag = if vid.flag == PickFlag::Picked { PickFlag::Unflagged } else { PickFlag::Picked };
                                     vid.flag = new_flag;
                                     let _ = self.db.set_flag(id, new_flag);
+                                    let _ = self.reload_catalog();
                                 }
                             }
                             GridAction::SetRating(id, rating) => {
@@ -368,15 +422,20 @@ impl eframe::App for MlvExplorerApp {
                     }
                 }
                 ViewMode::Player => {
-                    if let Some(idx) = self.selected_video_idx {
-                        if let Some(vid) = self.videos.get(idx) {
-                            if let Some(action) = self.player_view.show(ui, vid) {
-                                match action {
-                                    PlayerAction::BackToGrid => {
-                                        self.view_mode = ViewMode::Grid;
-                                    }
-                                    PlayerAction::FrameChanged(_frame_idx) => {
-                                        // Request next frame render
+                    let has_pb = self.ensure_playback(ctx);
+                    if has_pb {
+                        if let Some((_id, ref mut pb)) = self.current_playback {
+                            if let Some(idx) = self.selected_video_idx {
+                                if let Some(vid) = self.videos.get(idx) {
+                                    if let Some(act) = self.player_view.show(ui, vid, pb) {
+                                        match act {
+                                            PlayerAction::BackToGrid => {
+                                                self.view_mode = ViewMode::Grid;
+                                            }
+                                            PlayerAction::Seek(frame) => {
+                                                pb.set_target(frame, self.player_view.is_looping);
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -388,8 +447,8 @@ impl eframe::App for MlvExplorerApp {
             }
         });
 
-        // Backup & Import Modal dialog
-        if self.catalog_modal.show(ctx, &self.db) {
+        // 6. Catalog Backup & Import Modal
+        if self.catalog_dialog.show(ctx, &self.db) {
             self.reload_catalog();
         }
     }

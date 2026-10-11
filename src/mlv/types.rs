@@ -1,54 +1,39 @@
 use serde::{Deserialize, Serialize};
 
-/// 4-character block type identifier in MLV
-pub type BlockType = [u8; 4];
+/// Video class constants (MLVI.videoClass)
+pub const VIDEO_CLASS_RAW: u16 = 0x01;
+pub const VIDEO_CLASS_FLAG_LJ92: u16 = 0x20;
 
-pub const BLOCK_MLVI: BlockType = *b"MLVI";
-pub const BLOCK_RAWI: BlockType = *b"RAWI";
-pub const BLOCK_VIDF: BlockType = *b"VIDF";
-pub const BLOCK_AUDF: BlockType = *b"AUDF";
-pub const BLOCK_LENS: BlockType = *b"LENS";
-pub const BLOCK_EXPO: BlockType = *b"EXPO";
-pub const BLOCK_RTCI: BlockType = *b"RTCI";
-pub const BLOCK_IDNT: BlockType = *b"IDNT";
-pub const BLOCK_WBAL: BlockType = *b"WBAL";
-pub const BLOCK_DISP: BlockType = *b"DISP";
-pub const BLOCK_INFO: BlockType = *b"INFO";
-
-/// Common MLV Block Header (16 bytes)
-#[derive(Debug, Clone, Copy)]
-pub struct MlvBlockHeader {
-    pub block_type: BlockType,
-    pub block_size: u32,
-    pub timestamp: u64,
-}
-
-/// Parsed metadata for a video file
+/// Parsed, display-ready metadata for a clip (all spanned chunks combined).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MlvMetadata {
     pub file_path: String,
+    /// Total size of all chunks (.MLV + .M00, .M01 ...)
     pub file_size: u64,
+    pub chunk_count: u16,
     pub video_guid: u64,
-    pub file_num: u16,
-    pub file_count: u16,
+    pub video_class: u16,
+    pub has_audio: bool,
+
     pub width: u32,
     pub height: u32,
-    pub raw_width: u32,
-    pub raw_height: u32,
     pub fps_num: u32,
     pub fps_den: u32,
     pub frame_count: u32,
     pub bits_per_pixel: u16,
     pub black_level: u32,
     pub white_level: u32,
-    pub cfa_pattern: u32, // 0 = RGGB, 1 = GRBG, 2 = GBRG, 3 = BGGR
-    
-    // Camera & Lens info
+    /// DNG-style CFA pattern (e.g. 0x02010100 = RGGB)
+    pub cfa_pattern: u32,
+    /// DNG ColorMatrix1 as 9 rationals (num, den)
+    pub color_matrix: Vec<i32>,
+
+    // Camera & lens
     pub camera_name: String,
     pub camera_serial: String,
     pub lens_name: String,
     pub focal_length_mm: u16,
-    pub aperture_fstop: f32, // e.g. 2.8
+    pub aperture_fstop: f32,
     pub iso: u32,
     pub shutter_speed_microseconds: u32,
     pub white_balance_kelvin: u32,
@@ -57,7 +42,7 @@ pub struct MlvMetadata {
 
 impl MlvMetadata {
     pub fn fps(&self) -> f32 {
-        if self.fps_den == 0 {
+        if self.fps_den == 0 || self.fps_num == 0 {
             24.0
         } else {
             self.fps_num as f32 / self.fps_den as f32
@@ -65,42 +50,43 @@ impl MlvMetadata {
     }
 
     pub fn duration_seconds(&self) -> f32 {
-        let fps = self.fps();
-        if fps <= 0.0 {
-            0.0
+        self.frame_count as f32 / self.fps().max(0.001)
+    }
+
+    pub fn is_lj92(&self) -> bool {
+        self.video_class & VIDEO_CLASS_FLAG_LJ92 != 0
+    }
+
+    pub fn codec_name(&self) -> String {
+        if self.is_lj92() {
+            format!("RAW {}-bit Lossless (LJ92)", self.bits_per_pixel)
         } else {
-            self.frame_count as f32 / fps
+            format!("RAW {}-bit Uncompressed", self.bits_per_pixel)
         }
     }
 
-    pub fn duration_formatted(&self) -> String {
-        let total_secs = self.duration_seconds();
-        let mins = (total_secs / 60.0) as u32;
-        let secs = (total_secs % 60.0) as u32;
-        let ms = ((total_secs.fract()) * 100.0) as u32;
-        format!("{:02}:{:02}.{:02}", mins, secs, ms)
-    }
-
-    pub fn resolution_formatted(&self) -> String {
-        format!("{}x{}", self.width, self.height)
-    }
-
-    pub fn cfa_name(&self) -> &'static str {
-        match self.cfa_pattern {
-            0 => "RGGB",
-            1 => "GRBG",
-            2 => "GBRG",
-            3 => "BGGR",
-            _ => "Unknown Bayer",
+    /// Position of the red pixel inside the 2x2 Bayer quad: (rx, ry)
+    pub fn red_offset(&self) -> (u32, u32) {
+        let p = self.cfa_pattern.to_le_bytes();
+        // DNG CFA codes: 0 = R, 1 = G, 2 = B
+        if self.cfa_pattern == 0 {
+            return (0, 0);
+        }
+        match p.iter().position(|&c| c == 0) {
+            Some(0) => (0, 0),
+            Some(1) => (1, 0),
+            Some(2) => (0, 1),
+            Some(3) => (1, 1),
+            _ => (0, 0),
         }
     }
 }
 
-/// Information about a single video frame offset in the MLV file
+/// Location of a single video frame payload on disk
 #[derive(Debug, Clone, Copy)]
-pub struct FrameIndexEntry {
+pub struct FrameRef {
     pub frame_number: u32,
-    pub file_offset: u64,
-    pub payload_size: u32,
-    pub timestamp: u64,
+    pub chunk: u16,
+    pub offset: u64,
+    pub size: u32,
 }

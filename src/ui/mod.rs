@@ -1,11 +1,15 @@
-pub mod filter_bar;
-pub mod grid_view;
-pub mod player_view;
-pub mod metadata_panel;
-pub mod catalog_modal;
+pub mod catalog_dialog;
+pub mod grid;
+pub mod inspector;
+pub mod navigator;
+pub mod player;
+pub mod theme;
+pub mod top_bar;
 
-pub use filter_bar::*;
-pub use grid_view::*;
-pub use player_view::*;
-pub use metadata_panel::*;
-pub use catalog_modal::*;
+pub use catalog_dialog::CatalogDialog;
+pub use grid::{GridAction, GridView};
+pub use inspector::Inspector;
+pub use navigator::Navigator;
+pub use player::{PlayerAction, PlayerView};
+pub use theme::*;
+pub use top_bar::{TopBar, TopBarAction};

@@ -1,280 +1,362 @@
+//! MLV container parser.
+//!
+//! Struct layouts follow `mlv.h` / `raw.h` from the Magic Lantern project
+//! (all little-endian, packed). Every block starts with:
+//!   blockType[4] | blockSize u32 | timestamp u64   (16 bytes)
+
 use super::types::*;
-use byteorder::{LittleEndian, ReadBytesExt};
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-pub struct MlvReader {
-    pub metadata: MlvMetadata,
-    pub frame_index: Vec<FrameIndexEntry>,
+/// Little-endian reader over a byte slice that never panics (returns 0 past the end).
+struct Rd<'a> {
+    b: &'a [u8],
+    p: usize,
 }
 
-impl MlvReader {
-    /// Fast scan of an MLV file to extract metadata and frame offsets
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, String> {
-        let path_ref = path.as_ref();
-        let file = File::open(path_ref).map_err(|e| format!("Cannot open file {}: {}", path_ref.display(), e))?;
-        let file_size = file.metadata().map_err(|e| e.to_string())?.len();
-        let mut reader = BufReader::with_capacity(256 * 1024, file);
+impl<'a> Rd<'a> {
+    fn new(b: &'a [u8], p: usize) -> Self {
+        Self { b, p }
+    }
+    fn take<const N: usize>(&mut self) -> [u8; N] {
+        let mut out = [0u8; N];
+        if self.p + N <= self.b.len() {
+            out.copy_from_slice(&self.b[self.p..self.p + N]);
+        }
+        self.p += N;
+        out
+    }
+    fn u8(&mut self) -> u8 {
+        self.take::<1>()[0]
+    }
+    fn u16(&mut self) -> u16 {
+        u16::from_le_bytes(self.take())
+    }
+    fn u32(&mut self) -> u32 {
+        u32::from_le_bytes(self.take())
+    }
+    fn i32(&mut self) -> i32 {
+        i32::from_le_bytes(self.take())
+    }
+    fn u64(&mut self) -> u64 {
+        u64::from_le_bytes(self.take())
+    }
+    fn cstr<const N: usize>(&mut self) -> String {
+        let raw = self.take::<N>();
+        let end = raw.iter().position(|&c| c == 0).unwrap_or(N);
+        String::from_utf8_lossy(&raw[..end]).trim().to_string()
+    }
+}
 
-        let mut metadata = MlvMetadata {
-            file_path: path_ref.to_string_lossy().to_string(),
-            file_size,
+/// A fully indexed clip: metadata + sorted frame table across all chunks.
+pub struct MlvClip {
+    pub meta: MlvMetadata,
+    pub frames: Vec<FrameRef>,
+    pub chunks: Vec<PathBuf>,
+}
+
+impl MlvClip {
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, String> {
+        let main = path.as_ref().to_path_buf();
+        let mut chunks = vec![main.clone()];
+        // Spanned recordings: NAME.M00, NAME.M01, ...
+        for i in 0..100 {
+            let p = main.with_extension(format!("M{:02}", i));
+            if p.exists() {
+                chunks.push(p);
+            } else {
+                break;
+            }
+        }
+
+        let mut meta = MlvMetadata {
+            file_path: main.to_string_lossy().to_string(),
             ..Default::default()
         };
+        let mut frames: Vec<FrameRef> = Vec::new();
+        let mut guid: Option<u64> = None;
+        let mut valid_chunks = Vec::new();
 
-        // First block must be MLVI
-        let first_header = Self::read_block_header(&mut reader)?;
-        if first_header.block_type != BLOCK_MLVI {
-            return Err("Not a valid MLV file: Missing MLVI header".to_string());
-        }
-
-        // Parse MLVI block body
-        let guid = reader.read_u64::<LittleEndian>().unwrap_or(0);
-        let file_num = reader.read_u16::<LittleEndian>().unwrap_or(0);
-        let file_count = reader.read_u16::<LittleEndian>().unwrap_or(0);
-        let _video_class = reader.read_u16::<LittleEndian>().unwrap_or(0);
-        let _audio_class = reader.read_u16::<LittleEndian>().unwrap_or(0);
-        let video_frame_count = reader.read_u32::<LittleEndian>().unwrap_or(0);
-        let _audio_frame_count = reader.read_u32::<LittleEndian>().unwrap_or(0);
-        let fps_num = reader.read_u32::<LittleEndian>().unwrap_or(24000);
-        let fps_den = reader.read_u32::<LittleEndian>().unwrap_or(1000);
-
-        metadata.video_guid = guid;
-        metadata.file_num = file_num;
-        metadata.file_count = file_count;
-        metadata.fps_num = fps_num;
-        metadata.fps_den = fps_den;
-        metadata.frame_count = video_frame_count;
-
-        // Jump to end of MLVI block
-        let mlvi_payload_read = 8 + 2 + 2 + 2 + 2 + 4 + 4 + 4 + 4; // 32 bytes
-        let remaining_mlvi = first_header.block_size.saturating_sub(16 + mlvi_payload_read);
-        if remaining_mlvi > 0 {
-            reader.seek(SeekFrom::Current(remaining_mlvi as i64)).map_err(|e| e.to_string())?;
-        }
-
-        let mut frame_index = Vec::new();
-        let mut current_offset = first_header.block_size as u64;
-
-        // Iterate through subsequent blocks
-        while current_offset < file_size {
-            let header = match Self::read_block_header(&mut reader) {
-                Ok(h) => h,
-                Err(_) => break, // EOF or truncated block
-            };
-
-            if header.block_size < 16 {
-                break; // Corrupted block size
+        for (ci, chunk_path) in chunks.iter().enumerate() {
+            match scan_chunk(chunk_path, valid_chunks.len() as u16, &mut meta, &mut frames, ci == 0) {
+                Ok(g) => {
+                    if let Some(expected) = guid {
+                        if g != expected {
+                            continue; // not part of this recording
+                        }
+                    } else {
+                        guid = Some(g);
+                    }
+                    valid_chunks.push(chunk_path.clone());
+                }
+                Err(e) if ci == 0 => return Err(e),
+                Err(_) => {}
             }
-
-            let payload_size = header.block_size - 16;
-            let block_start_offset = current_offset;
-
-            match header.block_type {
-                BLOCK_RAWI => {
-                    let _x_res = reader.read_u16::<LittleEndian>().unwrap_or(0);
-                    let _y_res = reader.read_u16::<LittleEndian>().unwrap_or(0);
-                    let _raw_info_ver = reader.read_u32::<LittleEndian>().unwrap_or(0);
-                    let _buffer = reader.read_u32::<LittleEndian>().unwrap_or(0);
-                    let width = reader.read_u16::<LittleEndian>().unwrap_or(0);
-                    let height = reader.read_u16::<LittleEndian>().unwrap_or(0);
-                    let _pitch = reader.read_u32::<LittleEndian>().unwrap_or(0);
-                    let _frame_size = reader.read_u32::<LittleEndian>().unwrap_or(0);
-                    let bits_per_pixel = reader.read_u32::<LittleEndian>().unwrap_or(14);
-                    let black_level = reader.read_u32::<LittleEndian>().unwrap_or(2048);
-                    let white_level = reader.read_u32::<LittleEndian>().unwrap_or(15000);
-                    let _dng_cfa = reader.read_u32::<LittleEndian>().unwrap_or(0);
-                    let cfa_pattern = reader.read_u32::<LittleEndian>().unwrap_or(0); // 0 = RGGB
-
-                    metadata.width = width as u32;
-                    metadata.height = height as u32;
-                    metadata.raw_width = width as u32;
-                    metadata.raw_height = height as u32;
-                    metadata.bits_per_pixel = bits_per_pixel as u16;
-                    metadata.black_level = black_level;
-                    metadata.white_level = white_level;
-                    metadata.cfa_pattern = cfa_pattern;
-
-                    // Seek to next block
-                    let read_bytes = 2 + 2 + 4 + 4 + 2 + 2 + 4 + 4 + 4 + 4 + 4 + 4 + 4;
-                    let remaining = payload_size.saturating_sub(read_bytes);
-                    reader.seek(SeekFrom::Current(remaining as i64)).map_err(|e| e.to_string())?;
-                }
-                BLOCK_VIDF => {
-                    let frame_number = reader.read_u32::<LittleEndian>().unwrap_or(frame_index.len() as u32);
-                    let _crop_pos_x = reader.read_u16::<LittleEndian>().unwrap_or(0);
-                    let _crop_pos_y = reader.read_u16::<LittleEndian>().unwrap_or(0);
-                    let _pan_pos_x = reader.read_u16::<LittleEndian>().unwrap_or(0);
-                    let _pan_pos_y = reader.read_u16::<LittleEndian>().unwrap_or(0);
-                    let frame_space = reader.read_u32::<LittleEndian>().unwrap_or(0);
-
-                    // Payload data starts after header (16) + vidf fields (16) + frameSpace
-                    let vidf_hdr_size = 16 + 16 + frame_space;
-                    let frame_data_offset = block_start_offset + vidf_hdr_size as u64;
-                    let frame_data_size = header.block_size.saturating_sub(vidf_hdr_size);
-
-                    frame_index.push(FrameIndexEntry {
-                        frame_number,
-                        file_offset: frame_data_offset,
-                        payload_size: frame_data_size,
-                        timestamp: header.timestamp,
-                    });
-
-                    // Skip remaining frame payload to get fast indexing
-                    let read_so_far = 4 + 2 + 2 + 2 + 2 + 4;
-                    let to_skip = payload_size.saturating_sub(read_so_far);
-                    reader.seek(SeekFrom::Current(to_skip as i64)).map_err(|e| e.to_string())?;
-                }
-                BLOCK_LENS => {
-                    let focal_length = reader.read_u16::<LittleEndian>().unwrap_or(0);
-                    let _focal_dist = reader.read_u16::<LittleEndian>().unwrap_or(0);
-                    let aperture = reader.read_u16::<LittleEndian>().unwrap_or(0);
-                    let _stabilizer = reader.read_u8().unwrap_or(0);
-                    let _autofocus = reader.read_u8().unwrap_or(0);
-                    let _flags = reader.read_u16::<LittleEndian>().unwrap_or(0);
-                    let _lens_id = reader.read_u32::<LittleEndian>().unwrap_or(0);
-
-                    let mut lens_name_bytes = [0u8; 32];
-                    let _ = reader.read_exact(&mut lens_name_bytes);
-                    let lens_name = String::from_utf8_lossy(&lens_name_bytes)
-                        .trim_matches(char::from(0))
-                        .trim()
-                        .to_string();
-
-                    metadata.focal_length_mm = focal_length;
-                    metadata.aperture_fstop = if aperture > 0 { aperture as f32 / 100.0 } else { 0.0 };
-                    if !lens_name.is_empty() {
-                        metadata.lens_name = lens_name;
-                    }
-
-                    let read_so_far = 2 + 2 + 2 + 1 + 1 + 2 + 4 + 32;
-                    let to_skip = payload_size.saturating_sub(read_so_far);
-                    if to_skip > 0 {
-                        reader.seek(SeekFrom::Current(to_skip as i64)).map_err(|e| e.to_string())?;
-                    }
-                }
-                BLOCK_EXPO => {
-                    let _iso_mode = reader.read_u32::<LittleEndian>().unwrap_or(0);
-                    let iso = reader.read_u32::<LittleEndian>().unwrap_or(0);
-                    let shutter = reader.read_u64::<LittleEndian>().unwrap_or(0);
-
-                    metadata.iso = iso;
-                    metadata.shutter_speed_microseconds = shutter as u32;
-
-                    let read_so_far = 4 + 4 + 8;
-                    let to_skip = payload_size.saturating_sub(read_so_far);
-                    if to_skip > 0 {
-                        reader.seek(SeekFrom::Current(to_skip as i64)).map_err(|e| e.to_string())?;
-                    }
-                }
-                BLOCK_IDNT => {
-                    let mut cam_name_bytes = [0u8; 32];
-                    let _ = reader.read_exact(&mut cam_name_bytes);
-                    let mut cam_serial_bytes = [0u8; 32];
-                    let _ = reader.read_exact(&mut cam_serial_bytes);
-
-                    let cam_name = String::from_utf8_lossy(&cam_name_bytes)
-                        .trim_matches(char::from(0))
-                        .trim()
-                        .to_string();
-                    let cam_serial = String::from_utf8_lossy(&cam_serial_bytes)
-                        .trim_matches(char::from(0))
-                        .trim()
-                        .to_string();
-
-                    if !cam_name.is_empty() {
-                        metadata.camera_name = cam_name;
-                    }
-                    if !cam_serial.is_empty() {
-                        metadata.camera_serial = cam_serial;
-                    }
-
-                    let to_skip = payload_size.saturating_sub(64);
-                    if to_skip > 0 {
-                        reader.seek(SeekFrom::Current(to_skip as i64)).map_err(|e| e.to_string())?;
-                    }
-                }
-                BLOCK_WBAL => {
-                    let _wb_mode = reader.read_u32::<LittleEndian>().unwrap_or(0);
-                    let kelvin = reader.read_u32::<LittleEndian>().unwrap_or(5500);
-                    metadata.white_balance_kelvin = kelvin;
-
-                    let to_skip = payload_size.saturating_sub(8);
-                    if to_skip > 0 {
-                        reader.seek(SeekFrom::Current(to_skip as i64)).map_err(|e| e.to_string())?;
-                    }
-                }
-                BLOCK_RTCI => {
-                    let sec = reader.read_u32::<LittleEndian>().unwrap_or(0);
-                    let min = reader.read_u32::<LittleEndian>().unwrap_or(0);
-                    let hour = reader.read_u32::<LittleEndian>().unwrap_or(0);
-                    let mday = reader.read_u32::<LittleEndian>().unwrap_or(1);
-                    let mon = reader.read_u32::<LittleEndian>().unwrap_or(0) + 1;
-                    let year = reader.read_u32::<LittleEndian>().unwrap_or(100) + 1900;
-
-                    metadata.date_recorded = Some(format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", year, mon, mday, hour, min, sec));
-
-                    let to_skip = payload_size.saturating_sub(24);
-                    if to_skip > 0 {
-                        reader.seek(SeekFrom::Current(to_skip as i64)).map_err(|e| e.to_string())?;
-                    }
-                }
-                _ => {
-                    // Unknown or unneeded block; skip payload
-                    reader.seek(SeekFrom::Current(payload_size as i64)).map_err(|e| e.to_string())?;
-                }
-            }
-
-            current_offset += header.block_size as u64;
         }
 
-        // If video_frame_count in MLVI was 0, use the indexed count
-        if metadata.frame_count == 0 || metadata.frame_count != frame_index.len() as u32 {
-            metadata.frame_count = frame_index.len() as u32;
-        }
+        frames.sort_by_key(|f| f.frame_number);
+        frames.dedup_by_key(|f| f.frame_number);
 
-        // Default fallbacks if camera/lens were not in header
-        if metadata.camera_name.is_empty() {
-            metadata.camera_name = "Canon EOS RAW".to_string();
-        }
-        if metadata.lens_name.is_empty() {
-            metadata.lens_name = "Standard Lens".to_string();
+        meta.video_guid = guid.unwrap_or(0);
+        meta.chunk_count = valid_chunks.len() as u16;
+        meta.frame_count = frames.len() as u32;
+        meta.file_size = valid_chunks
+            .iter()
+            .filter_map(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len())
+            .sum();
+
+        sanitize_levels(&mut meta);
+
+        if meta.width == 0 || meta.height == 0 {
+            return Err("MLV has no RAWI block (unsupported video class)".into());
         }
 
         Ok(Self {
-            metadata,
-            frame_index,
+            meta,
+            frames,
+            chunks: valid_chunks,
         })
     }
+}
 
-    /// Read single block header (16 bytes)
-    fn read_block_header<R: Read>(reader: &mut R) -> Result<MlvBlockHeader, String> {
-        let mut block_type = [0u8; 4];
-        reader.read_exact(&mut block_type).map_err(|e| e.to_string())?;
-        let block_size = reader.read_u32::<LittleEndian>().map_err(|e| e.to_string())?;
-        let timestamp = reader.read_u64::<LittleEndian>().map_err(|e| e.to_string())?;
+/// Scan one chunk file; appends frames and fills metadata. Returns the file GUID.
+fn scan_chunk(
+    path: &Path,
+    chunk_idx: u16,
+    meta: &mut MlvMetadata,
+    frames: &mut Vec<FrameRef>,
+    is_main: bool,
+) -> Result<u64, String> {
+    let file = File::open(path).map_err(|e| format!("Cannot open {}: {e}", path.display()))?;
+    let file_size = file.metadata().map_err(|e| e.to_string())?.len();
+    let mut r = BufReader::with_capacity(64 * 1024, file);
 
-        Ok(MlvBlockHeader {
-            block_type,
-            block_size,
-            timestamp,
-        })
-    }
+    let mut offset: u64 = 0;
+    let mut guid = 0u64;
+    let mut hdr = [0u8; 16];
+    let mut buf: Vec<u8> = Vec::with_capacity(1024);
 
-    /// Read raw frame bytes at the given frame index
-    pub fn read_frame_bytes(&self, frame_idx: usize) -> Result<Vec<u8>, String> {
-        if frame_idx >= self.frame_index.len() {
-            return Err("Frame index out of bounds".to_string());
+    while offset + 16 <= file_size {
+        if r.read_exact(&mut hdr).is_err() {
+            break;
+        }
+        let ty = [hdr[0], hdr[1], hdr[2], hdr[3]];
+        let size = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as u64;
+
+        if offset == 0 && &ty != b"MLVI" {
+            return Err("Not an MLV file (missing MLVI header)".into());
+        }
+        if size < 16 || offset + size > file_size {
+            break; // truncated / corrupt tail
         }
 
-        let entry = &self.frame_index[frame_idx];
-        let mut file = File::open(&self.metadata.file_path).map_err(|e| e.to_string())?;
-        file.seek(SeekFrom::Start(entry.file_offset)).map_err(|e| e.to_string())?;
+        match &ty {
+            b"VIDF" => {
+                let mut sub = [0u8; 16];
+                if r.read_exact(&mut sub).is_err() {
+                    break;
+                }
+                let mut s = Rd::new(&sub, 0);
+                let frame_number = s.u32();
+                let _crop_x = s.u16();
+                let _crop_y = s.u16();
+                let _pan_x = s.u16();
+                let _pan_y = s.u16();
+                let frame_space = s.u32() as u64;
+                let data_off = offset + 32 + frame_space;
+                let data_size = size.saturating_sub(32 + frame_space);
+                frames.push(FrameRef {
+                    frame_number,
+                    chunk: chunk_idx,
+                    offset: data_off,
+                    size: data_size as u32,
+                });
+                let skip = size as i64 - 32;
+                if r.seek_relative(skip).is_err() {
+                    break;
+                }
+            }
+            b"MLVI" | b"RAWI" | b"IDNT" | b"LENS" | b"EXPO" | b"RTCI" | b"WBAL" => {
+                buf.clear();
+                buf.extend_from_slice(&hdr);
+                buf.resize(size as usize, 0);
+                if r.read_exact(&mut buf[16..]).is_err() {
+                    break;
+                }
+                let g = parse_meta_block(&ty, &buf, meta, is_main);
+                if &ty == b"MLVI" {
+                    guid = g;
+                }
+            }
+            b"AUDF" => {
+                meta.has_audio = true;
+                if r.seek_relative(size as i64 - 16).is_err() {
+                    break;
+                }
+            }
+            _ => {
+                if r.seek_relative(size as i64 - 16).is_err() {
+                    break;
+                }
+            }
+        }
+        offset += size;
+    }
 
-        let mut buffer = vec![0u8; entry.payload_size as usize];
-        file.read_exact(&mut buffer).map_err(|e| e.to_string())?;
+    // Make sure underlying position is consistent (not strictly needed)
+    let _ = r.seek(SeekFrom::Start(0));
+    Ok(guid)
+}
 
-        Ok(buffer)
+/// Parses a metadata block. Returns the GUID for MLVI blocks, 0 otherwise.
+fn parse_meta_block(ty: &[u8; 4], b: &[u8], m: &mut MlvMetadata, is_main: bool) -> u64 {
+    // Payload starts after the 16-byte generic header.
+    let mut r = Rd::new(b, 16);
+    match ty {
+        b"MLVI" => {
+            // fileMagic[4] blockSize[4] versionString[8] | fileGuid ...
+            let guid = r.u64();
+            let _file_num = r.u16();
+            let _file_count = r.u16();
+            let _file_flags = r.u32();
+            let video_class = r.u16();
+            let audio_class = r.u16();
+            let _video_frames = r.u32();
+            let _audio_frames = r.u32();
+            let fps_num = r.u32();
+            let fps_den = r.u32();
+            if is_main {
+                m.video_class = video_class;
+                m.has_audio |= audio_class != 0;
+                m.fps_num = fps_num;
+                m.fps_den = fps_den;
+            }
+            return guid;
+        }
+        b"RAWI" => {
+            let x_res = r.u16() as u32;
+            let y_res = r.u16() as u32;
+            // struct raw_info
+            let _api_version = r.i32();
+            let _buffer = r.u32();
+            let height = r.i32();
+            let width = r.i32();
+            let _pitch = r.i32();
+            let _frame_size = r.i32();
+            let bpp = r.i32();
+            let black = r.i32();
+            let white = r.i32();
+            for _ in 0..4 {
+                r.i32(); // crop
+            }
+            for _ in 0..4 {
+                r.i32(); // active area
+            }
+            r.i32();
+            r.i32(); // exposure_bias[2]
+            let cfa = r.u32();
+            let _illuminant = r.i32();
+            let mut cm = Vec::with_capacity(18);
+            for _ in 0..18 {
+                cm.push(r.i32());
+            }
+
+            m.width = if x_res > 0 { x_res } else { width.max(0) as u32 };
+            m.height = if y_res > 0 { y_res } else { height.max(0) as u32 };
+            m.bits_per_pixel = bpp.clamp(0, 16) as u16;
+            m.black_level = black.max(0) as u32;
+            m.white_level = white.max(0) as u32;
+            m.cfa_pattern = cfa;
+            m.color_matrix = cm;
+        }
+        b"IDNT" => {
+            let name = r.cstr::<32>();
+            let _model = r.u32();
+            let serial = r.cstr::<32>();
+            if !name.is_empty() {
+                m.camera_name = name;
+            }
+            if !serial.is_empty() {
+                m.camera_serial = serial;
+            }
+        }
+        b"LENS" => {
+            let focal = r.u16();
+            let _focus_dist = r.u16();
+            let aperture = r.u16();
+            let _stab = r.u8();
+            let _af = r.u8();
+            let _flags = r.u32();
+            let _lens_id = r.u32();
+            let name = r.cstr::<32>();
+            if m.lens_name.is_empty() && !name.is_empty() {
+                m.lens_name = name;
+            }
+            if m.focal_length_mm == 0 {
+                m.focal_length_mm = focal;
+            }
+            if m.aperture_fstop == 0.0 && aperture > 0 {
+                m.aperture_fstop = aperture as f32 / 100.0;
+            }
+        }
+        b"EXPO" => {
+            let _iso_mode = r.u32();
+            let iso = r.u32();
+            let _iso_analog = r.u32();
+            let _digital_gain = r.u32();
+            let shutter = r.u64();
+            if m.iso == 0 {
+                m.iso = iso;
+                m.shutter_speed_microseconds = shutter.min(u32::MAX as u64) as u32;
+            }
+        }
+        b"RTCI" => {
+            let sec = r.u16();
+            let min = r.u16();
+            let hour = r.u16();
+            let mday = r.u16();
+            let mon = r.u16();
+            let year = r.u16();
+            if m.date_recorded.is_none() && mday > 0 && mday <= 31 && mon < 12 {
+                m.date_recorded = Some(format!(
+                    "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                    year as u32 + 1900,
+                    mon + 1,
+                    mday,
+                    hour,
+                    min,
+                    sec
+                ));
+            }
+        }
+        b"WBAL" => {
+            let _mode = r.u32();
+            let kelvin = r.u32();
+            if m.white_balance_kelvin == 0 {
+                m.white_balance_kelvin = kelvin;
+            }
+        }
+        _ => {}
+    }
+    0
+}
+
+/// Black/white levels in some files are stored at 14-bit scale even for 10/12-bit data.
+fn sanitize_levels(m: &mut MlvMetadata) {
+    let bpp = if (8..=16).contains(&m.bits_per_pixel) { m.bits_per_pixel } else { 14 };
+    m.bits_per_pixel = bpp;
+    let max = (1u32 << bpp) - 1;
+    if m.white_level > max && bpp < 14 {
+        let shift = 14 - bpp as u32;
+        m.white_level >>= shift;
+        m.black_level >>= shift;
+    }
+    if m.white_level == 0 || m.white_level > max {
+        m.white_level = max;
+    }
+    if m.black_level >= m.white_level {
+        m.black_level = 0;
     }
 }
