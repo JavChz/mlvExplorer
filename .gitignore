@@ -64,3 +64,6 @@ Desktop.ini
 .env
 .env.local
 *.log
+
+# DB
+mlv_catalog.db
