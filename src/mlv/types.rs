@@ -69,32 +69,51 @@ impl MlvMetadata {
     }
 
     /// Auto-detect aspect ratio / stretch factor for Magic Lantern anamorphic & binning modes.
-    /// Handles 1x3 binning (EOS M crop mood), 3x1 binning, or user explicit ratios.
+    /// In all 1x3 / 3x1 crop mood anamorphic modes, raw pixels are squeezed and require 3.0x horizontal stretch (decompression).
     pub fn default_stretch(&self) -> f32 {
         if self.pixel_aspect_ratio > 0.05 && (self.pixel_aspect_ratio - 1.0).abs() > 0.01 {
-            return self.pixel_aspect_ratio;
+            // Some MLV tools / encoders write PAR as H:W (e.g. 1/3 or 1/2) rather than W:H.
+            // In our viewer, stretch_factor is a horizontal expansion multiplier (>= 1.0).
+            let par = if self.pixel_aspect_ratio < 0.85 {
+                1.0 / self.pixel_aspect_ratio
+            } else {
+                self.pixel_aspect_ratio
+            };
+            if (par - 3.0).abs() < 0.25 {
+                return 3.0;
+            } else if (par - 2.0).abs() < 0.2 {
+                return 2.0;
+            } else if (par - 1.75).abs() < 0.15 {
+                return 1.75;
+            } else if (par - 1.5).abs() < 0.15 {
+                return 1.5;
+            } else if (par - 1.333).abs() < 0.15 {
+                return 1.333;
+            }
+            return par;
         }
 
-        // Check if RAWC indicated asymmetric sensor binning
+        // Check if RAWC indicated asymmetric sensor binning (e.g. 1x3 or 3x1)
         if self.binning_x > 0 && self.binning_y > 0 && self.binning_x != self.binning_y {
-            let ratio = self.binning_y as f32 / self.binning_x as f32;
-            if (ratio - 3.0).abs() < 0.1 {
-                return 3.0; // 1x3 mode: sensor binned 3x horizontally -> 3x horizontal stretch
-            } else if (ratio - (1.0 / 3.0)).abs() < 0.05 {
-                return 0.3333;
+            let max_bin = self.binning_x.max(self.binning_y) as f32;
+            let min_bin = self.binning_x.min(self.binning_y) as f32;
+            let ratio = max_bin / min_bin.max(1.0);
+            if (ratio - 3.0).abs() < 0.25 {
+                return 3.0; // 1x3 or 3x1 mode: always decompress with 3.0x horizontal stretch
+            } else if (ratio - 2.0).abs() < 0.2 {
+                return 2.0;
+            } else if (ratio - 1.5).abs() < 0.15 {
+                return 1.5;
             }
             return ratio;
         }
 
         // Geometric heuristics based on captured raw sensor dimensions:
-        // In Magic Lantern 1x3 / Crop Mood anamorphic modes, sensor readout reads 1 column for every 3 rows
-        // (or 3x horizontal binning). Typical recorded resolutions have height noticeably larger relative to width, e.g.:
-        // 1736x2214, 1736x2178, 1736x1160, 1536x2160, 1280x2160, 720x1280.
-        // Also checks common 1x3 mode widths: 1736, 1536, 1440, 1280 with tall aspect ratios.
+        // In Magic Lantern 1x3 / Crop Mood anamorphic modes, sensor readout squashes raw video horizontally
+        // (e.g. 1736x2214, 1736x2178, 1736x1160, 1536x2160, 1280x2160, 720x1280).
+        // Stretched horizontally by 3.0x to restore widescreen aspect ratio!
         if self.width > 0 && self.height > 0 {
             let raw_ar = self.width as f32 / self.height as f32;
-            // Any raw video ratio from 0.40 up to 1.15 is squeezed:
-            // e.g. 1736 / 1500 = 1.157 -> stretched by 3x gives a cinematic 3.47:1 or 2.39:1 crop
             if raw_ar >= 0.35 && raw_ar <= 1.25 {
                 return 3.0;
             }

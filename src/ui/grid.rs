@@ -8,6 +8,7 @@ pub enum GridAction {
     OpenPlayer(usize),
     TogglePick(i64),
     SetRating(i64, u8),
+    OpenInMlvApp(usize),
 }
 
 pub struct GridView {
@@ -81,6 +82,22 @@ impl GridView {
                         if response.double_clicked() {
                             action = Some(GridAction::OpenPlayer(i));
                         }
+
+                        response.context_menu(|ui| {
+                            if ui.button("▶ Open in Player").clicked() {
+                                action = Some(GridAction::OpenPlayer(i));
+                                ui.close_menu();
+                            }
+                            if ui.button("🎬 Open in MLVApp").clicked() {
+                                action = Some(GridAction::OpenInMlvApp(i));
+                                ui.close_menu();
+                            }
+                            ui.separator();
+                            if ui.button(if vid.flag == PickFlag::Picked { "🏳 Remove Pick" } else { "🏳 Pick" }).clicked() {
+                                action = Some(GridAction::TogglePick(vid.id));
+                                ui.close_menu();
+                            }
+                        });
 
                         let painter = ui.painter();
 

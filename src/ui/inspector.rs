@@ -2,6 +2,10 @@ use crate::db::{Database, PickFlag, VideoRecord};
 use crate::ui::theme::*;
 use egui::{Color32, RichText, Ui};
 
+pub enum InspectorAction {
+    OpenInMlvApp,
+}
+
 pub struct Inspector {
     pub new_tag_input: String,
 }
@@ -21,7 +25,8 @@ impl Inspector {
         video: Option<&mut VideoRecord>,
         db: &Database,
         all_tags: &[String],
-    ) {
+    ) -> Option<InspectorAction> {
+        let mut action = None;
         ui.label(RichText::new("METADATA & TAGS").extra_letter_spacing(1.2).strong().size(11.0).color(TEXT_MUTED));
         ui.add_space(4.0);
         ui.separator();
@@ -31,10 +36,21 @@ impl Inspector {
             ui.vertical_centered(|ui| {
                 ui.label(RichText::new("No clip selected").italics().color(TEXT_MUTED));
             });
-            return;
+            return None;
         };
 
         egui::ScrollArea::vertical().show(ui, |ui| {
+            // Quick Launch MLVApp Button
+            ui.vertical_centered_justified(|ui| {
+                if ui.button(RichText::new("🎬 Open in MLVApp").strong().color(Color32::from_rgb(243, 244, 246)))
+                    .on_hover_text("Open this clip directly in MLV App for advanced grading & audio export")
+                    .clicked()
+                {
+                    action = Some(InspectorAction::OpenInMlvApp);
+                }
+            });
+            ui.add_space(4.0);
+
             // Section 1: Library Organization (Rating & Flags)
             ui.group(|ui| {
                 ui.label(RichText::new("ORGANIZATION").strong().size(11.0).color(TEXT_SECONDARY));
@@ -226,12 +242,11 @@ impl Inspector {
                     ui.label("Aspect Stretch:");
                     let cur_s = vid.stretch_factor;
                     let s_label = match cur_s {
-                        s if (s - 3.0).abs() < 0.05 => "3.0x (1x3 Anamorphic)",
+                        s if (s - 3.0).abs() < 0.05 => "3.0x (1x3 / 3x1 Anamorphic)",
                         s if (s - 2.0).abs() < 0.05 => "2.0x Anamorphic",
                         s if (s - 1.75).abs() < 0.05 => "1.75x Anamorphic",
                         s if (s - 1.5).abs() < 0.05 => "1.5x Anamorphic",
                         s if (s - 1.333).abs() < 0.05 => "1.33x Anamorphic",
-                        s if (s - 0.333).abs() < 0.05 => "0.33x (3x1)",
                         _ => "1.0x (Square)",
                     };
                     egui::ComboBox::from_id_salt(format!("insp_stretch_{}", vid.id))
@@ -239,12 +254,11 @@ impl Inspector {
                         .show_ui(ui, |ui| {
                             for (factor, label) in [
                                 (1.0f32, "1.0x (1:1 Square)"),
-                                (3.0f32, "3.0x (1x3 Anamorphic)"),
-                                (2.0f32, "2.0x Anamorphic"),
+                                (3.0f32, "3.0x (1x3 / 3x1 Anamorphic / EOS M Crop Mood)"),
+                                (2.0f32, "2.0x (Standard 2x Anamorphic)"),
                                 (1.75f32, "1.75x Anamorphic"),
                                 (1.5f32, "1.5x Anamorphic"),
                                 (1.333f32, "1.33x Anamorphic"),
-                                (0.333f32, "0.33x (3x1 Binning)"),
                             ] {
                                 let is_sel = (cur_s - factor).abs() < 0.02;
                                 if ui.selectable_label(is_sel, label).clicked() {
@@ -306,5 +320,7 @@ impl Inspector {
                 }
             });
         });
+
+        action
     }
 }

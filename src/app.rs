@@ -5,12 +5,39 @@ use crate::playback::Playback;
 use crate::thumbnails::ThumbnailManager;
 use crate::ui::*;
 use eframe::egui::{self, RichText};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ViewMode {
     Grid,
     Player,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportProgress {
+    pub current: usize,
+    pub total: usize,
+    pub current_file: String,
+    pub imported: usize,
+    pub duplicates: usize,
+    pub failed: usize,
+}
+
+pub enum ImportMessage {
+    Progress {
+        current: usize,
+        total: usize,
+        current_file: String,
+        imported: usize,
+        duplicates: usize,
+        failed: usize,
+    },
+    Complete {
+        total: usize,
+        imported: usize,
+        duplicates: usize,
+        failed: usize,
+    },
 }
 
 pub struct MlvExplorerApp {
@@ -33,6 +60,11 @@ pub struct MlvExplorerApp {
     player_view: PlayerView,
     inspector: Inspector,
     catalog_dialog: CatalogDialog,
+
+    // Background Importer
+    import_tx: crossbeam_channel::Sender<ImportMessage>,
+    import_rx: crossbeam_channel::Receiver<ImportMessage>,
+    import_progress: Option<ImportProgress>,
 
     // Status bar & notification
     gpu_info: String,
@@ -57,6 +89,8 @@ impl MlvExplorerApp {
 
         let thumb_mgr = ThumbnailManager::new(db_path.clone(), cc.egui_ctx.clone());
 
+        let (import_tx, import_rx) = crossbeam_channel::unbounded();
+
         let mut app = Self {
             db,
             view_mode: ViewMode::Grid,
@@ -73,6 +107,9 @@ impl MlvExplorerApp {
             player_view: PlayerView::default(),
             inspector: Inspector::default(),
             catalog_dialog: CatalogDialog::default(),
+            import_tx,
+            import_rx,
+            import_progress: None,
             gpu_info,
             status_bar_text: "Ready. Drag and drop .MLV files or folders to import.".to_string(),
         };
@@ -173,42 +210,222 @@ impl MlvExplorerApp {
         }
     }
 
-    /// Ingest a file or directory recursively
-    pub fn ingest_path(&mut self, path: &Path) {
-        let mut count = 0;
-        if path.is_file() {
-            if path.extension().and_then(|s| s.to_str()).map_or(false, |ext| ext.eq_ignore_ascii_case("mlv")) {
-                if self.ingest_single_mlv(path) {
-                    count += 1;
+    /// Start a background import of files or directories, skipping duplicates and tracking progress
+    pub fn start_import(&mut self, paths: Vec<PathBuf>, ctx: &egui::Context) {
+        let mut files_to_import = Vec::new();
+        for path in paths {
+            if path.is_file() {
+                if path.extension().map_or(false, |ext| ext.eq_ignore_ascii_case("mlv")) {
+                    files_to_import.push(path);
                 }
-            }
-        } else if path.is_dir() {
-            for entry in walkdir::WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
-                let p = entry.path();
-                if p.is_file() && p.extension().and_then(|s| s.to_str()).map_or(false, |ext| ext.eq_ignore_ascii_case("mlv")) {
-                    if self.ingest_single_mlv(p) {
-                        count += 1;
+            } else if path.is_dir() {
+                for entry in walkdir::WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+                    let p = entry.into_path();
+                    if p.is_file() && p.extension().map_or(false, |ext| ext.eq_ignore_ascii_case("mlv")) {
+                        files_to_import.push(p);
                     }
                 }
             }
         }
 
-        if count > 0 {
-            self.status_bar_text = format!("Imported {} MLV file(s).", count);
-            self.reload_catalog();
+        // Deduplicate paths in the current batch
+        let mut seen = std::collections::HashSet::new();
+        files_to_import.retain(|p| seen.insert(p.clone()));
+
+        if files_to_import.is_empty() {
+            self.status_bar_text = "No .MLV files found in selected path(s).".to_string();
+            return;
         }
+
+        let total = files_to_import.len();
+        self.import_progress = Some(ImportProgress {
+            current: 0,
+            total,
+            current_file: String::new(),
+            imported: 0,
+            duplicates: 0,
+            failed: 0,
+        });
+
+        let tx = self.import_tx.clone();
+        let db_path = self.db.path.clone();
+        let ctx_clone = ctx.clone();
+
+        std::thread::spawn(move || {
+            let db = match Database::open(&db_path) {
+                Ok(db) => db,
+                Err(e) => {
+                    eprintln!("Failed to open DB for import worker: {e}");
+                    return;
+                }
+            };
+
+            let mut imported = 0;
+            let mut duplicates = 0;
+            let mut failed = 0;
+
+            for (idx, path) in files_to_import.into_iter().enumerate() {
+                let file_name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "clip.mlv".to_string());
+
+                let _ = tx.send(ImportMessage::Progress {
+                    current: idx + 1,
+                    total,
+                    current_file: file_name.clone(),
+                    imported,
+                    duplicates,
+                    failed,
+                });
+                ctx_clone.request_repaint();
+
+                // 1. Path-based check: is this path or its canonical equivalent already in the catalog?
+                if db.is_file_imported(&path) {
+                    duplicates += 1;
+                    continue;
+                }
+
+                // 2. Open clip header & check content signature
+                match MlvClip::open(&path) {
+                    Ok(clip) => {
+                        // Check if identical content (file size, frames, date, camera) already exists
+                        match db.insert_new_video(&clip.meta) {
+                            Ok(Some(_id)) => {
+                                imported += 1;
+                            }
+                            Ok(None) => {
+                                duplicates += 1;
+                            }
+                            Err(e) => {
+                                eprintln!("Error saving clip {}: {}", path.display(), e);
+                                failed += 1;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to read MLV file {}: {}", path.display(), e);
+                        failed += 1;
+                    }
+                }
+            }
+
+            let _ = tx.send(ImportMessage::Complete {
+                total,
+                imported,
+                duplicates,
+                failed,
+            });
+            ctx_clone.request_repaint();
+        });
     }
 
-    fn ingest_single_mlv(&mut self, path: &Path) -> bool {
-        match MlvClip::open(path) {
-            Ok(clip) => {
-                let _ = self.db.upsert_video(&clip.meta);
-                true
+    /// Open a given clip file path in MLV App executable
+    pub fn open_in_mlv_app(&mut self, file_path: &Path) {
+        let abs_path = match std::fs::canonicalize(file_path) {
+            Ok(p) => p,
+            Err(_) => file_path.to_path_buf(),
+        };
+
+        // 1. Check if user already configured/saved an executable path in database
+        let mut exe_path: Option<PathBuf> = self
+            .db
+            .get_setting("mlv_app_path")
+            .ok()
+            .flatten()
+            .map(PathBuf::from)
+            .filter(|p| p.is_file());
+
+        // 2. If not saved or file was moved/deleted, search standard installation paths & PATH
+        if exe_path.is_none() {
+            let mut candidates: Vec<PathBuf> = Vec::new();
+
+            // Check standard program directories on Windows
+            if let Ok(prog_files) = std::env::var("ProgramFiles") {
+                candidates.push(PathBuf::from(&prog_files).join("MLV App").join("MLV App.exe"));
+                candidates.push(PathBuf::from(&prog_files).join("MLVApp").join("MLV App.exe"));
+                candidates.push(PathBuf::from(&prog_files).join("MLVApp").join("mlvapp.exe"));
             }
-            Err(e) => {
-                eprintln!("Error reading {}: {}", path.display(), e);
-                false
+            if let Ok(prog_files_x86) = std::env::var("ProgramFiles(x86)") {
+                candidates.push(PathBuf::from(&prog_files_x86).join("MLV App").join("MLV App.exe"));
+                candidates.push(PathBuf::from(&prog_files_x86).join("MLVApp").join("mlvapp.exe"));
             }
+            if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+                candidates.push(PathBuf::from(&local_appdata).join("Programs").join("MLV App").join("MLV App.exe"));
+                candidates.push(PathBuf::from(&local_appdata).join("MLV App").join("MLV App.exe"));
+            }
+
+            // Also check Desktop, Downloads, and common user folders where portable builds are extracted
+            if let Ok(user_profile) = std::env::var("USERPROFILE") {
+                let up = PathBuf::from(user_profile);
+                candidates.push(up.join("Downloads").join("MLV App.exe"));
+                candidates.push(up.join("Desktop").join("MLV App.exe"));
+            }
+
+            // Check system PATH
+            if let Ok(path_var) = std::env::var("PATH") {
+                for dir in std::env::split_paths(&path_var) {
+                    let c1 = dir.join("MLV App.exe");
+                    let c2 = dir.join("mlvapp.exe");
+                    let c3 = dir.join("mlv_app.exe");
+                    if c1.is_file() {
+                        candidates.push(c1);
+                        break;
+                    }
+                    if c2.is_file() {
+                        candidates.push(c2);
+                        break;
+                    }
+                    if c3.is_file() {
+                        candidates.push(c3);
+                        break;
+                    }
+                }
+            }
+
+            for cand in candidates {
+                if cand.is_file() {
+                    exe_path = Some(cand);
+                    break;
+                }
+            }
+        }
+
+        // 3. If still not found, open a file picker to prompt user to locate MLV App
+        if exe_path.is_none() {
+            let filter_ext = if cfg!(target_os = "windows") {
+                &["exe"][..]
+            } else if cfg!(target_os = "macos") {
+                &["app"][..]
+            } else {
+                &["AppImage", "bin", "*"][..]
+            };
+
+            if let Some(picked) = rfd::FileDialog::new()
+                .set_title("Locate MLV App executable (MLV App.exe)")
+                .add_filter("MLV App Executable", filter_ext)
+                .pick_file()
+            {
+                if picked.is_file() {
+                    let _ = self.db.set_setting("mlv_app_path", &picked.to_string_lossy());
+                    exe_path = Some(picked);
+                }
+            }
+        }
+
+        // 4. Launch MLV App with the clip path as argument
+        if let Some(exe) = exe_path {
+            let _ = self.db.set_setting("mlv_app_path", &exe.to_string_lossy());
+            match std::process::Command::new(&exe).arg(&abs_path).spawn() {
+                Ok(_) => {
+                    self.status_bar_text = format!("Launched MLV App with: {}", abs_path.display());
+                }
+                Err(e) => {
+                    self.status_bar_text = format!("Failed to launch MLV App ({}): {}", exe.display(), e);
+                }
+            }
+        } else {
+            self.status_bar_text = "MLV App executable not configured or not found.".to_string();
         }
     }
 
@@ -216,10 +433,9 @@ impl MlvExplorerApp {
     fn handle_drag_and_drop(&mut self, ctx: &egui::Context) {
         let dropped_files = ctx.input(|i| i.raw.dropped_files.clone());
         if !dropped_files.is_empty() {
-            for file in dropped_files {
-                if let Some(path) = file.path {
-                    self.ingest_path(&path);
-                }
+            let paths: Vec<PathBuf> = dropped_files.into_iter().filter_map(|f| f.path).collect();
+            if !paths.is_empty() {
+                self.start_import(paths, ctx);
             }
         }
     }
@@ -307,6 +523,34 @@ impl MlvExplorerApp {
 
 impl eframe::App for MlvExplorerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Poll incoming import progress messages
+        while let Ok(msg) = self.import_rx.try_recv() {
+            match msg {
+                ImportMessage::Progress { current, total, current_file, imported, duplicates, failed } => {
+                    self.import_progress = Some(ImportProgress {
+                        current,
+                        total,
+                        current_file,
+                        imported,
+                        duplicates,
+                        failed,
+                    });
+                }
+                ImportMessage::Complete { total: _, imported, duplicates, failed } => {
+                    self.import_progress = None;
+                    let mut summary = format!("Import complete: {} added", imported);
+                    if duplicates > 0 {
+                        summary.push_str(&format!(", {} duplicates skipped", duplicates));
+                    }
+                    if failed > 0 {
+                        summary.push_str(&format!(", {} failed", failed));
+                    }
+                    self.status_bar_text = summary;
+                    self.reload_catalog();
+                }
+            }
+        }
+
         self.thumb_mgr.update(ctx);
         self.handle_drag_and_drop(ctx);
         self.handle_keyboard_shortcuts(ctx);
@@ -356,14 +600,12 @@ impl eframe::App for MlvExplorerApp {
                                     .add_filter("Magic Lantern RAW Video", &["mlv", "MLV"])
                                     .pick_files()
                                 {
-                                    for f in files {
-                                        self.ingest_path(&f);
-                                    }
+                                    self.start_import(files, ctx);
                                 }
                             }
                             TopBarAction::ImportFolder => {
                                 if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                                    self.ingest_path(&folder);
+                                    self.start_import(vec![folder], ctx);
                                 }
                             }
                             TopBarAction::OpenCatalogModal => {
@@ -374,13 +616,58 @@ impl eframe::App for MlvExplorerApp {
                 });
         }
 
+        // Import Progress Banner (shown below Top Bar when an import is actively running)
+        if let Some(prog) = &self.import_progress {
+            egui::TopBottomPanel::top("import_progress_banner")
+                .exact_height(32.0)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(RichText::new(format!("Importing ({}/{}):", prog.current, prog.total)).strong().color(TEXT_PRIMARY));
+                        ui.label(RichText::new(&prog.current_file).color(ACCENT_BLUE));
+
+                        let fraction = if prog.total > 0 { prog.current as f32 / prog.total as f32 } else { 0.0 };
+                        ui.add(
+                            egui::ProgressBar::new(fraction)
+                                .show_percentage()
+                                .animate(true)
+                                .desired_width(200.0),
+                        );
+
+                        ui.label(
+                            RichText::new(format!("{} added · {} duplicates skipped", prog.imported, prog.duplicates))
+                                .small()
+                                .color(TEXT_MUTED),
+                        );
+                    });
+                });
+        }
+
         // 2. Status Bar (Bottom)
         if !is_fullscreen_player {
             egui::TopBottomPanel::bottom("studio_status_bar")
                 .exact_height(24.0)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(&self.status_bar_text).small().color(TEXT_MUTED));
+                        if let Some(prog) = &self.import_progress {
+                            ui.spinner();
+                            let fraction = if prog.total > 0 { prog.current as f32 / prog.total as f32 } else { 0.0 };
+                            ui.add(
+                                egui::ProgressBar::new(fraction)
+                                    .animate(true)
+                                    .desired_width(120.0),
+                            );
+                            ui.label(
+                                RichText::new(format!(
+                                    "Importing {}/{} ({}) · {} skipped",
+                                    prog.current, prog.total, prog.current_file, prog.duplicates
+                                ))
+                                .small()
+                                .color(ACCENT_BLUE),
+                            );
+                        } else {
+                            ui.label(RichText::new(&self.status_bar_text).small().color(TEXT_MUTED));
+                        }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(RichText::new(&self.gpu_info).small().color(TEXT_MUTED));
                             ui.separator();
@@ -409,7 +696,18 @@ impl eframe::App for MlvExplorerApp {
                 .width_range(240.0..=380.0)
                 .show(ctx, |ui| {
                     let mut sel_vid = self.selected_video_idx.and_then(|idx| self.videos.get_mut(idx));
-                    self.inspector.show(ui, sel_vid.as_deref_mut(), &self.db, &self.all_tags);
+                    if let Some(act) = self.inspector.show(ui, sel_vid.as_deref_mut(), &self.db, &self.all_tags) {
+                        match act {
+                            crate::ui::inspector::InspectorAction::OpenInMlvApp => {
+                                if let Some(idx) = self.selected_video_idx {
+                                    if let Some(vid) = self.videos.get(idx) {
+                                        let path = PathBuf::from(&vid.file_path);
+                                        self.open_in_mlv_app(&path);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 });
         }
 
@@ -446,6 +744,13 @@ impl eframe::App for MlvExplorerApp {
                                     let _ = self.db.set_rating(id, rating);
                                 }
                             }
+                            GridAction::OpenInMlvApp(idx) => {
+                                self.selected_video_idx = Some(idx);
+                                if let Some(vid) = self.videos.get(idx) {
+                                    let path = PathBuf::from(&vid.file_path);
+                                    self.open_in_mlv_app(&path);
+                                }
+                            }
                         }
                     }
                 }
@@ -480,6 +785,10 @@ impl eframe::App for MlvExplorerApp {
                                                 self.reload_catalog();
                                             }
                                             PlayerAction::ToggleFullscreen => {}
+                                            PlayerAction::OpenInMlvApp => {
+                                                let path = PathBuf::from(&vid.file_path);
+                                                self.open_in_mlv_app(&path);
+                                            }
                                         }
                                     }
                                 }

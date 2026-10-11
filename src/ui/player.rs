@@ -16,6 +16,7 @@ pub enum PlayerAction {
     SetFlag(PickFlag),
     SetStretch(f32),
     ToggleFullscreen,
+    OpenInMlvApp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -128,8 +129,16 @@ impl PlayerView {
                 ui.label(RichText::new(&video.camera_name).small().color(TEXT_MUTED));
             }
 
-            // Right-aligned Toolbar: Realtime status, Stretch, Fullscreen, Zoom, WB, Exposure
+            // Right-aligned Toolbar: Realtime status, Stretch, Fullscreen, Zoom, WB, Exposure, MLVApp
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button(RichText::new("🎬 Open in MLVApp").small().strong().color(Color32::from_rgb(243, 244, 246)))
+                    .on_hover_text("Open this clip directly in MLV App for advanced grading & audio export")
+                    .clicked()
+                {
+                    action = Some(PlayerAction::OpenInMlvApp);
+                }
+
+                ui.separator();
                 ui.label(RichText::new("🚀 GPU Debayer: Direct").small().color(Color32::from_rgb(96, 165, 250)));
                 ui.separator();
 
@@ -164,12 +173,11 @@ impl PlayerView {
                 // Anamorphic De-Squeeze (Stretch Factor) Dropdown
                 let cur_stretch = video.stretch_factor;
                 let stretch_name = match cur_stretch {
-                    s if (s - 3.0).abs() < 0.05 => "3.0x (1x3 Anamorphic)",
+                    s if (s - 3.0).abs() < 0.05 => "3.0x (1x3 / 3x1 Anamorphic)",
                     s if (s - 2.0).abs() < 0.05 => "2.0x Anamorphic",
                     s if (s - 1.75).abs() < 0.05 => "1.75x Anamorphic",
                     s if (s - 1.5).abs() < 0.05 => "1.5x Anamorphic",
                     s if (s - 1.333).abs() < 0.05 => "1.33x Anamorphic",
-                    s if (s - 0.333).abs() < 0.05 => "0.33x (3x1)",
                     s if (s - 1.0).abs() < 0.05 => "1.0x (1:1 Square)",
                     s => &format!("{:.2}x", s),
                 };
@@ -179,12 +187,11 @@ impl PlayerView {
                     .show_ui(ui, |ui| {
                         for (factor, label) in [
                             (1.0f32, "1.0x (1:1 Square - Off)"),
-                            (3.0f32, "3.0x (1x3 Anamorphic / EOS M Crop Mood)"),
+                            (3.0f32, "3.0x (1x3 / 3x1 Anamorphic / EOS M Crop Mood)"),
                             (2.0f32, "2.0x (Standard 2x Anamorphic)"),
                             (1.75f32, "1.75x Anamorphic"),
                             (1.5f32, "1.5x Anamorphic"),
                             (1.333f32, "1.33x Anamorphic"),
-                            (0.333f32, "0.33x (3x1 Binning)"),
                         ] {
                             let is_sel = (cur_stretch - factor).abs() < 0.02;
                             if ui.selectable_label(is_sel, label).clicked() {
