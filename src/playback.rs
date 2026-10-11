@@ -80,6 +80,38 @@ impl Playback {
         self.shared.state.lock().unwrap().cache.contains_key(&frame)
     }
 
+    /// Number of contiguous frames ready immediately ahead of the target frame
+    pub fn ready_ahead(&self, start_frame: usize, count: usize) -> usize {
+        let s = self.shared.state.lock().unwrap();
+        let mut ready = 0;
+        let total = self.source.frame_count();
+        for k in 0..count {
+            let f = if start_frame + k < total {
+                start_frame + k
+            } else if s.looping && total > 0 {
+                (start_frame + k) % total
+            } else {
+                break;
+            };
+            if s.cache.contains_key(&f) {
+                ready += 1;
+            } else {
+                break;
+            }
+        }
+        ready
+    }
+
+    /// Total number of cached frames currently in memory
+    pub fn cache_count(&self) -> usize {
+        self.shared.state.lock().unwrap().cache.len()
+    }
+
+    /// Target buffer ahead depth
+    pub fn ahead_budget(&self) -> usize {
+        self.shared.state.lock().unwrap().ahead
+    }
+
     /// Frames decoded per second over the last second.
     pub fn decode_fps(&self) -> f32 {
         let mut s = self.shared.state.lock().unwrap();
@@ -158,13 +190,16 @@ fn worker(shared: Arc<Shared>, source: Arc<FrameSource>, ctx: egui::Context) {
                 std::thread::sleep(std::time::Duration::from_millis(30));
             }
         }
-        // Evict frames outside the window (keep a few behind for stepping back)
+        // Evict frames outside the window (keep 16 frames behind for smooth reverse / scrubbing)
         let target = s.target;
         let ahead = s.ahead;
-        s.cache.retain(|&f, _| {
-            let fwd = (f + count - target) % count.max(1);
-            fwd < ahead + 2 || count - fwd <= 6
-        });
+        // If whole clip fits in ahead budget, never evict!
+        if count > ahead {
+            s.cache.retain(|&f, _| {
+                let fwd = (f + count - target) % count.max(1);
+                fwd < ahead + 4 || count - fwd <= 16
+            });
+        }
         drop(s);
         ctx.request_repaint();
     }

@@ -3,7 +3,7 @@ name = "mlv-explorer"
 version = "0.2.0"
 edition = "2021"
 authors = ["mlvExplorer Contributors"]
-description = "High-performance Lightroom-style catalog, player, and organizer for Magic Lantern RAW Videos (.mlv)"
+description = "High-performance Photo browser-style catalog, player, and organizer for Magic Lantern RAW Videos (.mlv)"
 default-run = "mlv-explorer"
 
 [dependencies]

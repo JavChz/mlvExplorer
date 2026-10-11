@@ -32,7 +32,7 @@ impl TopBar {
             ui.separator();
             ui.add_space(6.0);
 
-            // Workspace Mode Switcher (Lightroom Library / Loupe tabs)
+            // Workspace Mode Switcher (Photo browser Library / Loupe tabs)
             let grid_active = !is_player_mode;
             let player_active = is_player_mode;
 

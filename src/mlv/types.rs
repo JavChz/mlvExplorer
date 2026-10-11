@@ -75,7 +75,7 @@ impl MlvMetadata {
             return self.pixel_aspect_ratio;
         }
 
-        // Check if RAWC indicated binning
+        // Check if RAWC indicated asymmetric sensor binning
         if self.binning_x > 0 && self.binning_y > 0 && self.binning_x != self.binning_y {
             let ratio = self.binning_y as f32 / self.binning_x as f32;
             if (ratio - 3.0).abs() < 0.1 {
@@ -87,15 +87,15 @@ impl MlvMetadata {
         }
 
         // Geometric heuristics based on captured raw sensor dimensions:
-        // In Magic Lantern 1x3 anamorphic mode, typical recorded resolutions have
-        // height noticeably larger relative to width than standard 16:9, e.g.:
-        // 720x1280 (becomes 2160x1280 16:9), 1736x2340, 1280x2160, 1024x1728
-        // or very squished width-to-height ratios < 1.0 or ~0.5-0.8.
+        // In Magic Lantern 1x3 / Crop Mood anamorphic modes, sensor readout reads 1 column for every 3 rows
+        // (or 3x horizontal binning). Typical recorded resolutions have height noticeably larger relative to width, e.g.:
+        // 1736x2214, 1736x2178, 1736x1160, 1536x2160, 1280x2160, 720x1280.
+        // Also checks common 1x3 mode widths: 1736, 1536, 1440, 1280 with tall aspect ratios.
         if self.width > 0 && self.height > 0 {
             let raw_ar = self.width as f32 / self.height as f32;
-            // A raw video ratio around 0.5 to 0.9 almost always indicates a 1x3 horizontal squeeze
-            // because stretching by 3.0 yields a cinematic 1.6:1 - 2.4:1 aspect ratio!
-            if raw_ar > 0.40 && raw_ar < 0.95 {
+            // Any raw video ratio from 0.40 up to 1.15 is squeezed:
+            // e.g. 1736 / 1500 = 1.157 -> stretched by 3x gives a cinematic 3.47:1 or 2.39:1 crop
+            if raw_ar >= 0.35 && raw_ar <= 1.25 {
                 return 3.0;
             }
         }

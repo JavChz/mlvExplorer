@@ -6,6 +6,7 @@ use crate::ui::playbar::Playbar;
 use crate::ui::theme::*;
 use eframe::egui_wgpu;
 use egui::{Color32, Rect, RichText, Rounding, Stroke, Ui, Vec2};
+use std::sync::Arc;
 use std::time::Instant;
 
 pub enum PlayerAction {
@@ -24,6 +25,7 @@ pub struct PlayerView {
     pub exposure_ev: f32, // -2.0 to +2.0 EV
     pub zoom_100: bool,
     pub last_frame_time: Instant,
+    pub last_shown_frame: Option<Arc<crate::mlv::DecodedFrame>>,
 }
 
 impl Default for PlayerView {
@@ -36,6 +38,7 @@ impl Default for PlayerView {
             exposure_ev: 0.0,
             zoom_100: false,
             last_frame_time: Instant::now(),
+            last_shown_frame: None,
         }
     }
 }
@@ -136,14 +139,25 @@ impl PlayerView {
 
                 ui.separator();
 
-                // Decoder Performance
-                let dec_fps = playback.decode_fps();
-                let dec_col = if dec_fps >= video.fps {
-                    Color32::from_rgb(34, 197, 94)
+                // Real-Time / Buffer Health Indicator
+                let ready_ahead = playback.ready_ahead(self.current_frame, 24);
+                let is_realtime = ready_ahead >= 3 || (!self.is_playing && playback.is_ready(self.current_frame));
+                let status_text = if !self.is_playing {
+                    format!("● READY ({} buf)", playback.cache_count())
+                } else if is_realtime {
+                    format!("⚡ REAL-TIME ({} buf)", ready_ahead)
                 } else {
-                    Color32::from_rgb(234, 179, 8)
+                    format!("⏳ BUFFERING ({}/{})", ready_ahead, 6)
                 };
-                ui.label(RichText::new(format!("Decoder: {:.1} fps", dec_fps)).small().color(dec_col));
+                let status_col = if is_realtime {
+                    Color32::from_rgb(34, 197, 94) // Studio Green
+                } else {
+                    Color32::from_rgb(234, 179, 8) // Warning Gold
+                };
+                ui.label(RichText::new(status_text).strong().size(12.0).color(status_col));
+
+                ui.separator();
+                ui.label(RichText::new("🚀 GPU Debayer: Direct").small().color(Color32::from_rgb(96, 165, 250)));
             });
         });
 
@@ -155,10 +169,10 @@ impl PlayerView {
         let effective_fps = (video.fps * self.playback_speed).max(1.0);
         let frame_duration = std::time::Duration::from_secs_f32(1.0 / effective_fps);
 
-        if self.is_playing && self.last_frame_time.elapsed() >= frame_duration {
-            // Buffer-aware pacing: If the next frame is ready or already cached, advance.
-            // If it's not ready yet, do not jump ahead and skip frames; wait up to a short threshold
-            // so playback never stutters or drops frames unnecessarily!
+        if self.is_playing {
+            // Buffer-paced playback engine:
+            // Ensure we have at least 1-2 frames ahead before advancing smoothly at native video frame rate.
+            // When caught up with decode speed, wait for the frame rather than flashing a blank screen.
             let next_target = if self.current_frame + 1 < total_frames {
                 self.current_frame + 1
             } else if self.is_looping {
@@ -167,8 +181,8 @@ impl PlayerView {
                 self.current_frame
             };
 
-            let is_next_ready = playback.is_ready(next_target);
-            if is_next_ready || self.last_frame_time.elapsed() >= frame_duration * 3 {
+            let can_advance = playback.is_ready(next_target);
+            if can_advance && self.last_frame_time.elapsed() >= frame_duration {
                 self.last_frame_time = Instant::now();
                 if self.current_frame + 1 < total_frames {
                     self.current_frame += 1;
@@ -215,8 +229,16 @@ impl PlayerView {
         let center = rect.center();
         let display_rect = Rect::from_center_size(center, Vec2::new(display_w, display_h));
 
+        // Fetch current frame or fallback to last displayed frame (prevents flickering during scrub/buffer)
+        let frame_to_show = if let Some(frame) = playback.get(self.current_frame) {
+            self.last_shown_frame = Some(frame.clone());
+            Some(frame)
+        } else {
+            self.last_shown_frame.clone()
+        };
+
         // Render decoded frame via GPU WGSL shader callback
-        if let Some(frame) = playback.get(self.current_frame) {
+        if let Some(frame) = frame_to_show {
             let m = camera_to_srgb(&playback.source.clip.meta);
             let (rx, ry) = playback.source.clip.meta.red_offset();
             let exp_mult = (2.0f32).powf(self.exposure_ev);
@@ -230,9 +252,9 @@ impl PlayerView {
                 view: [0.0, 0.0, 1.0, 1.0],
             };
 
-            let key = (video.id as u64) << 32 | (self.current_frame as u64);
+            let key = (video.id as u64) << 32 | (frame.index as u64);
             let cb = RawViewCallback {
-                frame: frame.clone(),
+                frame,
                 key,
                 uniforms,
             };
@@ -240,7 +262,7 @@ impl PlayerView {
             let paint_cb = egui_wgpu::Callback::new_paint_callback(display_rect, cb);
             painter.add(paint_cb);
         } else {
-            // Buffering placeholder
+            // Initial placeholder before first frame completes decode
             painter.rect(
                 display_rect,
                 Rounding::ZERO,
@@ -250,7 +272,7 @@ impl PlayerView {
             painter.text(
                 center,
                 egui::Align2::CENTER_CENTER,
-                format!("⏳ Buffering Frame {}...", self.current_frame + 1),
+                format!("⏳ Pre-buffering Clip..."),
                 egui::FontId::proportional(15.0),
                 TEXT_MUTED,
             );

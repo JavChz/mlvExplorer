@@ -4,7 +4,7 @@ pub use models::*;
 use rusqlite::{params, Connection, OptionalExtension, Result};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 pub struct Database {
     conn: Connection,

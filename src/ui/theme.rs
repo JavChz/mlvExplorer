@@ -5,7 +5,7 @@ pub const BG_PANEL: Color32 = Color32::from_rgb(24, 24, 28);
 pub const BG_CARD: Color32 = Color32::from_rgb(32, 32, 38);
 pub const BG_CARD_HOVER: Color32 = Color32::from_rgb(42, 42, 50);
 pub const BG_CARD_SELECTED: Color32 = Color32::from_rgb(38, 52, 74);
-pub const BORDER_SELECTED: Color32 = Color32::from_rgb(59, 130, 246); // Lightroom/Resolve blue
+pub const BORDER_SELECTED: Color32 = Color32::from_rgb(59, 130, 246); // Photo browser/Resolve blue
 
 pub const BORDER_SUBTLE: Color32 = Color32::from_rgb(44, 44, 52);
 pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(244, 244, 245);
