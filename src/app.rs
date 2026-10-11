@@ -435,6 +435,16 @@ impl eframe::App for MlvExplorerApp {
                                             PlayerAction::Seek(frame) => {
                                                 pb.set_target(frame, self.player_view.is_looping);
                                             }
+                                            PlayerAction::SetRating(rating) => {
+                                                let id = vid.id;
+                                                let _ = self.db.set_rating(id, rating);
+                                                self.reload_catalog();
+                                            }
+                                            PlayerAction::SetFlag(flag) => {
+                                                let id = vid.id;
+                                                let _ = self.db.set_flag(id, flag);
+                                                self.reload_catalog();
+                                            }
                                         }
                                     }
                                 }
