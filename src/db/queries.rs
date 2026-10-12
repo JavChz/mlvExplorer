@@ -1,6 +1,6 @@
 use crate::db::models::{CatalogBackup, Facet, Facets, FilterCriteria, PickFlag, TagRecord, VideoRecord};
 use rusqlite::{params, Connection, OptionalExtension, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// High-level query and mutation operations on the MLV database
 pub struct Queries<'a> {
@@ -484,6 +484,88 @@ impl<'a> Queries<'a> {
             self.remove_video(id)?;
             count += 1;
         }
+        Ok(count)
+    }
+
+    /// Creates an atomic snapshot backup of the SQLite database in the specified folder with a timestamped filename.
+    pub fn backup_to_folder<P: AsRef<Path>>(&self, folder: P) -> Result<PathBuf, String> {
+        let folder = folder.as_ref();
+        if !folder.is_dir() {
+            std::fs::create_dir_all(folder).map_err(|e| e.to_string())?;
+        }
+        let now = chrono::Local::now();
+        let timestamp = now.format("%Y%m%d_%H%M%S");
+        let backup_filename = format!("mlv_catalog_backup_{}.db", timestamp);
+        let dest_path = folder.join(backup_filename);
+
+        self.backup_database_to_file(&dest_path).map_err(|e| e.to_string())?;
+        Ok(dest_path)
+    }
+
+    /// Merges an external SQLite catalog database into the current catalog.
+    pub fn import_from_catalog_db<P: AsRef<Path>>(&self, source_path: P) -> Result<usize, String> {
+        let source_path = source_path.as_ref();
+        let src_conn = Connection::open(source_path).map_err(|e| format!("Cannot open source catalog: {e}"))?;
+        
+        let src_queries = Queries::new(&src_conn);
+        let src_videos = src_queries.get_videos(&FilterCriteria::default())
+            .map_err(|e| format!("Failed to read source catalog videos: {e}"))?;
+        
+        let mut count = 0;
+        for vid in &src_videos {
+            let existing: Option<i64> = self
+                .conn
+                .query_row("SELECT id FROM videos WHERE file_path = ?1", params![vid.file_path], |r| r.get(0))
+                .optional()
+                .map_err(|e| e.to_string())?;
+            let row_id = match existing {
+                Some(id) => id,
+                None => {
+                    let meta = crate::mlv::MlvMetadata {
+                        file_path: vid.file_path.clone(),
+                        file_size: vid.file_size,
+                        width: vid.width,
+                        height: vid.height,
+                        fps_num: (vid.fps * 1000.0) as u32,
+                        fps_den: 1000,
+                        frame_count: vid.frame_count,
+                        bits_per_pixel: vid.bits_per_pixel,
+                        camera_name: vid.camera_name.clone(),
+                        camera_serial: vid.camera_serial.clone(),
+                        lens_name: vid.lens_name.clone(),
+                        focal_length_mm: vid.focal_length_mm,
+                        aperture_fstop: vid.aperture_fstop,
+                        iso: vid.iso,
+                        shutter_speed_microseconds: vid.shutter_speed,
+                        white_balance_kelvin: vid.white_balance_kelvin,
+                        date_recorded: vid.date_recorded.clone(),
+                        chunk_count: vid.chunk_count.max(1),
+                        has_audio: vid.has_audio,
+                        ..Default::default()
+                    };
+                    self.upsert_video(&meta).map_err(|e| e.to_string())?
+                }
+            };
+            let _ = self.set_rating(row_id, vid.rating);
+            let _ = self.set_flag(row_id, vid.flag);
+            let _ = self.set_notes(row_id, &vid.notes);
+            let _ = self.set_production_slate(
+                row_id,
+                vid.scene.as_deref(),
+                vid.shot.as_deref(),
+                vid.take.as_deref(),
+                vid.location.as_deref(),
+                vid.camera_unit.as_deref(),
+            );
+            if vid.stretch_factor > 0.05 {
+                let _ = self.set_stretch_factor(row_id, vid.stretch_factor);
+            }
+            for t in &vid.tags {
+                let _ = self.add_tag(row_id, t);
+            }
+            count += 1;
+        }
+
         Ok(count)
     }
 }

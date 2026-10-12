@@ -26,8 +26,10 @@ impl PlayerView {
         // Notify playback engine of target frame for read-ahead
         playback.set_target(self.current_frame, self.is_looping);
 
+        let editing_text = ui.ctx().wants_keyboard_input();
+
         // Global hotkeys in Player mode
-        if ui.input(|i| i.key_pressed(egui::Key::F)) {
+        if !editing_text && ui.input(|i| i.key_pressed(egui::Key::F)) {
             self.is_fullscreen = !self.is_fullscreen;
             if self.is_fullscreen {
                 self.show_overlay_controls = false;
@@ -39,12 +41,12 @@ impl PlayerView {
         if self.is_fullscreen && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.is_fullscreen = false;
             action = Some(PlayerAction::ToggleFullscreen);
-        } else if !self.is_fullscreen && ui.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::G)) {
+        } else if !self.is_fullscreen && (ui.input(|i| i.key_pressed(egui::Key::Escape)) || (!editing_text && ui.input(|i| i.key_pressed(egui::Key::G)))) {
             action = Some(PlayerAction::BackToGrid);
         }
 
         // Play / Pause and Frame Stepping
-        if ui.input(|i| i.key_pressed(egui::Key::Space)) {
+        if !editing_text && ui.input(|i| i.key_pressed(egui::Key::Space)) {
             self.is_playing = !self.is_playing;
             self.last_frame_time = Instant::now();
             let time_sec = self.current_frame as f32 / video.fps.max(1.0);
@@ -56,28 +58,28 @@ impl PlayerView {
                 }
             }
         }
-        if ui.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
+        if !editing_text && ui.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
             if self.current_frame > 0 {
                 self.current_frame -= 1;
                 action = Some(PlayerAction::Seek(self.current_frame));
             }
         }
-        if ui.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
+        if !editing_text && ui.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
             if self.current_frame + 1 < total_frames {
                 self.current_frame += 1;
                 action = Some(PlayerAction::Seek(self.current_frame));
             }
         }
-        if ui.input(|i| i.key_pressed(egui::Key::Home)) {
+        if !editing_text && ui.input(|i| i.key_pressed(egui::Key::Home)) {
             self.current_frame = 0;
             action = Some(PlayerAction::Seek(0));
         }
-        if ui.input(|i| i.key_pressed(egui::Key::End)) {
+        if !editing_text && ui.input(|i| i.key_pressed(egui::Key::End)) {
             self.current_frame = total_frames.saturating_sub(1);
             action = Some(PlayerAction::Seek(self.current_frame));
         }
 
-        if ui.input(|i| i.key_pressed(egui::Key::Z)) {
+        if !editing_text && ui.input(|i| i.key_pressed(egui::Key::Z)) {
             if self.zoom_mode == ZoomMode::Fit {
                 self.zoom_mode = ZoomMode::Scale(1.0);
             } else {
@@ -85,14 +87,14 @@ impl PlayerView {
                 self.pan_offset = egui::Vec2::ZERO;
             }
         }
-        if ui.input(|i| i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals)) {
+        if !editing_text && ui.input(|i| i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals)) {
             let cur = match self.zoom_mode {
                 ZoomMode::Fit => 1.0,
                 ZoomMode::Scale(s) => s,
             };
             self.zoom_mode = ZoomMode::Scale((cur * 1.25).min(8.0));
         }
-        if ui.input(|i| i.key_pressed(egui::Key::Minus)) {
+        if !editing_text && ui.input(|i| i.key_pressed(egui::Key::Minus)) {
             let cur = match self.zoom_mode {
                 ZoomMode::Fit => 1.0,
                 ZoomMode::Scale(s) => s,

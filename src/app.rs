@@ -16,6 +16,7 @@ pub enum ViewMode {
 }
 
 pub struct MlvExplorerApp {
+    config: crate::config::AppConfig,
     db: Database,
     view_mode: ViewMode,
     videos: Vec<VideoRecord>,
@@ -35,7 +36,7 @@ pub struct MlvExplorerApp {
     grid_view: GridView,
     player_view: PlayerView,
     inspector: Inspector,
-    catalog_dialog: CatalogDialog,
+    settings_dialog: SettingsDialog,
     delete_confirm_dialog: DeleteConfirmDialog,
 
     // Background Importer
@@ -60,15 +61,22 @@ impl MlvExplorerApp {
             "Software Viewport".to_string()
         };
 
-        // Open SQLite catalog
-        let db_path = default_catalog_path();
-        let db = Database::open(&db_path).expect("Failed to initialize SQLite catalog");
+        // Load persistent application config
+        let config = crate::config::AppConfig::load();
 
-        let thumb_mgr = ThumbnailManager::new(db_path.clone(), cc.egui_ctx.clone());
+        // Open SQLite catalog (last opened or default)
+        let db_path = config.resolve_catalog_path();
+        let db = Database::open(&db_path).unwrap_or_else(|_| {
+            let def = default_catalog_path();
+            Database::open(&def).expect("Failed to initialize default SQLite catalog")
+        });
+
+        let thumb_mgr = ThumbnailManager::new(db_path, cc.egui_ctx.clone());
 
         let (import_tx, import_rx) = crossbeam_channel::unbounded();
 
         let mut app = Self {
+            config,
             db,
             view_mode: ViewMode::Grid,
             videos: Vec::new(),
@@ -84,7 +92,7 @@ impl MlvExplorerApp {
             grid_view: GridView::default(),
             player_view: PlayerView::default(),
             inspector: Inspector::default(),
-            catalog_dialog: CatalogDialog::default(),
+            settings_dialog: SettingsDialog::default(),
             delete_confirm_dialog: DeleteConfirmDialog::default(),
             import_tx,
             import_rx,
@@ -224,9 +232,29 @@ impl MlvExplorerApp {
         );
     }
 
+    /// Switch active SQLite catalog to a different database file
+    pub fn switch_catalog(&mut self, new_path: PathBuf, ctx: &egui::Context) {
+        match Database::open(&new_path) {
+            Ok(db) => {
+                self.db = db;
+                self.config.last_catalog_path = Some(new_path.clone());
+                self.config.save();
+                self.thumb_mgr = ThumbnailManager::new(new_path.clone(), ctx.clone());
+                self.current_playback = None;
+                self.selected_video_idx = None;
+                self.selected_indices.clear();
+                self.reload_catalog();
+                self.status_bar_text = format!("Switched to catalog: {}", new_path.display());
+            }
+            Err(e) => {
+                self.status_bar_text = format!("Failed to open catalog {}: {e}", new_path.display());
+            }
+        }
+    }
+
     /// Open a given clip file path in MLV App executable
     pub fn open_in_mlv_app(&mut self, file_path: &Path) {
-        match ExternalLauncher::open_in_mlv_app(&self.db, file_path) {
+        match ExternalLauncher::open_in_mlv_app(&self.db, self.config.mlv_app_path.as_ref(), file_path) {
             Ok(msg) => self.status_bar_text = msg,
             Err(e) => self.status_bar_text = e,
         }
@@ -340,6 +368,11 @@ impl MlvExplorerApp {
 
     /// Global keyboard shortcuts
     fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
+        // Suppress hotkeys when user is typing in a text field (Search, Scene, Location, Notes, Keywords, etc.)
+        if ctx.wants_keyboard_input() {
+            return;
+        }
+
         let input = ctx.input(|i| i.clone());
 
         // Mode switching: G -> Grid, E / Enter -> Player, F -> Fullscreen Player
@@ -559,8 +592,8 @@ impl eframe::App for MlvExplorerApp {
                                     self.start_import(vec![folder], ctx);
                                 }
                             }
-                            TopBarAction::OpenCatalogModal => {
-                                self.catalog_dialog.is_open = true;
+                            TopBarAction::OpenSettingsModal => {
+                                self.settings_dialog.open(&self.config);
                             }
                         }
                     }
@@ -906,9 +939,16 @@ impl eframe::App for MlvExplorerApp {
             }
         });
 
-        // 6. Catalog Backup & Import Modal
-        if self.catalog_dialog.show(ctx, &self.db) {
-            self.reload_catalog();
+        // 6. Settings & Catalog Manager Modal
+        if let Some(act) = self.settings_dialog.show(ctx, &self.db, &mut self.config) {
+            match act {
+                SettingsAction::CatalogChanged => {
+                    self.reload_catalog();
+                }
+                SettingsAction::SwitchCatalog(path) => {
+                    self.switch_catalog(path, ctx);
+                }
+            }
         }
 
         // 7. Delete / Remove Confirmation Modal

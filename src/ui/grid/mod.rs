@@ -276,9 +276,16 @@ impl GridView {
         let inner_rect = scroll_output.inner_rect;
         let pointer = ui.input(|i| i.pointer.clone());
 
+        // Gutter margin: exclude the right scrollbar track from initiating rubberband selection
+        let scrollbar_gutter_w = 16.0_f32;
+        let valid_selection_rect = Rect::from_min_max(
+            inner_rect.min,
+            Pos2::new(inner_rect.max.x - scrollbar_gutter_w, inner_rect.max.y),
+        );
+
         if pointer.primary_pressed() {
             if let Some(press_pos) = pointer.press_origin() {
-                if inner_rect.contains(press_pos) {
+                if valid_selection_rect.contains(press_pos) {
                     let hit_card = card_rects.iter().any(|(_, r)| r.contains(press_pos));
                     if !hit_card {
                         self.drag_start_pos = Some(press_pos);

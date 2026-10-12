@@ -6,7 +6,7 @@ use egui::{Color32, RichText, Rounding, Stroke, Ui, Vec2};
 pub enum TopBarAction {
     ImportFiles,
     ImportFolder,
-    OpenCatalogModal,
+    OpenSettingsModal,
     SwitchToGrid,
     SwitchToPlayer,
 }
@@ -204,8 +204,8 @@ impl TopBar {
                     widgets::toolbar_divider(ui);
                 }
 
-                if widgets::button(ui, widgets::icon_label(icon::DATABASE, "Backup")).on_hover_text("Catalog Backup & Migration").clicked() {
-                    action = Some(TopBarAction::OpenCatalogModal);
+                if widgets::button(ui, widgets::icon_label(icon::GEAR, "Settings")).on_hover_text("Catalogs, Backups & Preferences").clicked() {
+                    action = Some(TopBarAction::OpenSettingsModal);
                 }
 
                 if widgets::button(ui, widgets::icon_label(icon::FOLDER_OPEN, "Import Folder")).clicked() {

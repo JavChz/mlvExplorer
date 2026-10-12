@@ -7,19 +7,27 @@ pub struct ExternalLauncher;
 impl ExternalLauncher {
     /// Launches MLV App with the given clip file path.
     /// Returns a status message string describing the outcome.
-    pub fn open_in_mlv_app(db: &Database, file_path: &Path) -> Result<String, String> {
+    pub fn open_in_mlv_app(
+        db: &Database,
+        configured_path: Option<&PathBuf>,
+        file_path: &Path,
+    ) -> Result<String, String> {
         let abs_path = match std::fs::canonicalize(file_path) {
             Ok(p) => p,
             Err(_) => file_path.to_path_buf(),
         };
 
-        // 1. Check if user already configured/saved an executable path in database
-        let mut exe_path: Option<PathBuf> = db
-            .get_setting("mlv_app_path")
-            .ok()
-            .flatten()
-            .map(PathBuf::from)
-            .filter(|p| p.is_file());
+        // 1. Check if configured path is provided, or user already saved one in database
+        let mut exe_path: Option<PathBuf> = configured_path
+            .cloned()
+            .filter(|p| p.is_file())
+            .or_else(|| {
+                db.get_setting("mlv_app_path")
+                    .ok()
+                    .flatten()
+                    .map(PathBuf::from)
+                    .filter(|p| p.is_file())
+            });
 
         // 2. If not saved or file was moved/deleted, search standard installation paths & PATH
         if exe_path.is_none() {
@@ -108,5 +116,41 @@ impl ExternalLauncher {
         } else {
             Err("MLV App executable not configured or not found.".to_string())
         }
+    }
+
+    /// Searches standard paths to locate an MLV App installation executable.
+    pub fn detect_mlv_app() -> Option<PathBuf> {
+        let mut candidates: Vec<PathBuf> = Vec::new();
+
+        if let Ok(prog_files) = std::env::var("ProgramFiles") {
+            candidates.push(PathBuf::from(&prog_files).join("MLV App").join("MLV App.exe"));
+            candidates.push(PathBuf::from(&prog_files).join("MLVApp").join("MLV App.exe"));
+            candidates.push(PathBuf::from(&prog_files).join("MLVApp").join("mlvapp.exe"));
+        }
+        if let Ok(prog_files_x86) = std::env::var("ProgramFiles(x86)") {
+            candidates.push(PathBuf::from(&prog_files_x86).join("MLV App").join("MLV App.exe"));
+            candidates.push(PathBuf::from(&prog_files_x86).join("MLVApp").join("mlvapp.exe"));
+        }
+        if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+            candidates.push(PathBuf::from(&local_appdata).join("Programs").join("MLV App").join("MLV App.exe"));
+            candidates.push(PathBuf::from(&local_appdata).join("MLV App").join("MLV App.exe"));
+        }
+        if let Ok(user_profile) = std::env::var("USERPROFILE") {
+            let up = PathBuf::from(user_profile);
+            candidates.push(up.join("Downloads").join("MLV App.exe"));
+            candidates.push(up.join("Desktop").join("MLV App.exe"));
+        }
+        if let Ok(path_var) = std::env::var("PATH") {
+            for dir in std::env::split_paths(&path_var) {
+                let c1 = dir.join("MLV App.exe");
+                let c2 = dir.join("mlvapp.exe");
+                let c3 = dir.join("mlv_app.exe");
+                if c1.is_file() { candidates.push(c1); break; }
+                if c2.is_file() { candidates.push(c2); break; }
+                if c3.is_file() { candidates.push(c3); break; }
+            }
+        }
+
+        candidates.into_iter().find(|p| p.is_file())
     }
 }

@@ -166,6 +166,16 @@ impl Database {
     }
 
     #[inline]
+    pub fn backup_to_folder<P: AsRef<Path>>(&self, folder: P) -> Result<PathBuf, String> {
+        self.queries().backup_to_folder(folder)
+    }
+
+    #[inline]
+    pub fn import_from_catalog_db<P: AsRef<Path>>(&self, source_path: P) -> Result<usize, String> {
+        self.queries().import_from_catalog_db(source_path)
+    }
+
+    #[inline]
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
         self.queries().get_setting(key)
     }
@@ -195,3 +205,59 @@ pub fn store_thumb(conn: &Connection, video_id: i64, jpeg: &[u8]) {
 pub fn delete_thumb(conn: &Connection, video_id: i64) {
     let _ = conn.execute("DELETE FROM thumbs WHERE video_id = ?1", params![video_id]);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mlv::MlvMetadata;
+
+    #[test]
+    fn test_backup_and_import() {
+        let unique_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let test_dir = std::env::temp_dir().join(format!("mlv_explorer_test_{unique_id}"));
+        std::fs::create_dir_all(&test_dir).unwrap();
+
+        let db_path_1 = test_dir.join("cat1.db");
+        let db1 = Database::open(&db_path_1).unwrap();
+
+        let mut meta = MlvMetadata::default();
+        meta.file_path = "C:/test/M01_0001.MLV".to_string();
+        meta.camera_name = "Canon EOS 5D Mark III".to_string();
+        meta.lens_name = "EF 50mm f/1.2L USM".to_string();
+        meta.width = 1920;
+        meta.height = 1080;
+        meta.fps_num = 24000;
+        meta.fps_den = 1000;
+        meta.frame_count = 100;
+
+        let row_id = db1.upsert_video(&meta).unwrap();
+        db1.set_rating(row_id, 4).unwrap();
+        db1.add_tag(row_id, "B-Roll").unwrap();
+        db1.set_notes(row_id, "Sunny morning test").unwrap();
+
+        // 1. Test backup creation
+        let backup_dir = test_dir.join("backups");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        let backup_file = db1.backup_to_folder(&backup_dir).unwrap();
+        assert!(backup_file.exists(), "Backup file should be created");
+
+        // 2. Test opening a second catalog and importing from cat1
+        let db_path_2 = test_dir.join("cat2.db");
+        let db2 = Database::open(&db_path_2).unwrap();
+        let imported_count = db2.import_from_catalog_db(&db_path_1).unwrap();
+        assert_eq!(imported_count, 1);
+
+        let videos = db2.get_videos(&FilterCriteria::default()).unwrap();
+        assert_eq!(videos.len(), 1);
+        assert_eq!(videos[0].rating, 4);
+        assert_eq!(videos[0].notes, "Sunny morning test");
+        assert!(videos[0].tags.contains(&"B-Roll".to_string()));
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+}
+

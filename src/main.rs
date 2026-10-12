@@ -1,5 +1,6 @@
 pub mod app;
 pub mod audio;
+pub mod config;
 pub mod db;
 pub mod gpu;
 pub mod importer;
