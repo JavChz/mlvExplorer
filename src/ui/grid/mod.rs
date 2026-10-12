@@ -54,7 +54,7 @@ impl GridView {
         &mut self,
         ui: &mut Ui,
         videos: &[VideoRecord],
-        selected_idx: Option<usize>,
+        selected_indices: &[usize],
         thumb_mgr: &mut ThumbnailManager,
         sort_order: &mut SortOrder,
     ) -> Option<GridAction> {
@@ -201,13 +201,14 @@ impl GridView {
                         .show(ui, |ui| {
                             for (c_idx, &i) in grp.indices.iter().enumerate() {
                                 let vid = &videos[i];
-                                let is_selected = selected_idx == Some(i);
+                                let is_selected = selected_indices.contains(&i);
 
                                 if let Some(card_act) = Card::show(
                                     ui,
                                     i,
                                     vid,
                                     is_selected,
+                                    selected_indices,
                                     card_w,
                                     card_h,
                                     thumb_h,
@@ -230,13 +231,14 @@ impl GridView {
                     .spacing([12.0, 14.0])
                     .show(ui, |ui| {
                         for (i, vid) in videos.iter().enumerate() {
-                            let is_selected = selected_idx == Some(i);
+                            let is_selected = selected_indices.contains(&i);
 
                             if let Some(card_act) = Card::show(
                                 ui,
                                 i,
                                 vid,
                                 is_selected,
+                                selected_indices,
                                 card_w,
                                 card_h,
                                 thumb_h,

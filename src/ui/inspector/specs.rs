@@ -5,7 +5,8 @@ use egui::{Color32, RichText, Ui};
 pub struct TechnicalSpecs;
 
 impl TechnicalSpecs {
-    pub fn show(ui: &mut Ui, vid: &mut VideoRecord, db: &Database) {
+    pub fn show(ui: &mut Ui, vid: &mut VideoRecord, db: &Database) -> Option<crate::ui::inspector::InspectorAction> {
+        let mut action = None;
         // Camera & Lens Metadata
         ui.group(|ui| {
             ui.label(RichText::new("CAMERA & OPTICS").strong().size(11.0).color(TEXT_SECONDARY));
@@ -91,6 +92,7 @@ impl TechnicalSpecs {
                             if ui.selectable_label(is_sel, label).clicked() {
                                 vid.stretch_factor = factor;
                                 let _ = db.set_stretch_factor(vid.id, factor);
+                                action = Some(crate::ui::inspector::InspectorAction::BatchSetStretch(factor));
                             }
                         }
                     });
@@ -139,6 +141,7 @@ impl TechnicalSpecs {
                 }
             });
         });
+        action
     }
 }
 

@@ -473,4 +473,17 @@ impl<'a> Queries<'a> {
         )?;
         Ok(())
     }
+
+    /// Remove multiple videos by ID from catalog
+    pub fn remove_videos(&self, video_ids: &[i64]) -> Result<usize> {
+        if video_ids.is_empty() {
+            return Ok(0);
+        }
+        let mut count = 0;
+        for &id in video_ids {
+            self.remove_video(id)?;
+            count += 1;
+        }
+        Ok(count)
+    }
 }

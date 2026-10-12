@@ -50,6 +50,7 @@ Designed for cinematographers and filmmakers who shoot with Magic Lantern on Can
 | **`P`** | Grid / Player | Flag as **Picked** |
 | **`X`** | Grid / Player | Flag as **Rejected** |
 | **`U`** | Grid / Player | **Unflag** / reset status to Neutral |
+| **`Del` / `Backspace`** | Grid View | **Remove from Catalog** (with confirmation) |
 | **`Esc`** | Any | Exit Fullscreen / Return to Grid View |
 
 ---

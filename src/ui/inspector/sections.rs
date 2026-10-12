@@ -40,11 +40,13 @@ impl OrganizationSection {
                         let new_r = if vid.rating == star { 0 } else { star };
                         vid.rating = new_r;
                         let _ = db.set_rating(vid.id, new_r);
+                        action = Some(InspectorAction::BatchSetRating(new_r));
                     }
                 }
                 if vid.rating > 0 && ui.small_button("Clear").clicked() {
                     vid.rating = 0;
                     let _ = db.set_rating(vid.id, 0);
+                    action = Some(InspectorAction::BatchSetRating(0));
                 }
             });
 
@@ -53,20 +55,25 @@ impl OrganizationSection {
                 ui.label("Flag:");
                 let is_picked = vid.flag == PickFlag::Picked;
                 if ui.selectable_label(is_picked, RichText::new("🏳 Pick").color(FLAG_PICKED)).clicked() {
-                    vid.flag = if is_picked { PickFlag::Unflagged } else { PickFlag::Picked };
-                    let _ = db.set_flag(vid.id, vid.flag);
+                    let new_flag = if is_picked { PickFlag::Unflagged } else { PickFlag::Picked };
+                    vid.flag = new_flag;
+                    let _ = db.set_flag(vid.id, new_flag);
+                    action = Some(InspectorAction::BatchSetFlag(new_flag));
                 }
 
                 let is_rej = vid.flag == PickFlag::Rejected;
                 if ui.selectable_label(is_rej, RichText::new("❌ Reject").color(FLAG_REJECTED)).clicked() {
-                    vid.flag = if is_rej { PickFlag::Unflagged } else { PickFlag::Rejected };
-                    let _ = db.set_flag(vid.id, vid.flag);
+                    let new_flag = if is_rej { PickFlag::Unflagged } else { PickFlag::Rejected };
+                    vid.flag = new_flag;
+                    let _ = db.set_flag(vid.id, new_flag);
+                    action = Some(InspectorAction::BatchSetFlag(new_flag));
                 }
 
                 let is_unf = vid.flag == PickFlag::Unflagged;
                 if ui.selectable_label(is_unf, "⚪ Unflag").clicked() {
                     vid.flag = PickFlag::Unflagged;
                     let _ = db.set_flag(vid.id, PickFlag::Unflagged);
+                    action = Some(InspectorAction::BatchSetFlag(PickFlag::Unflagged));
                 }
             });
         });
@@ -84,7 +91,8 @@ impl TagsSection {
         db: &Database,
         all_tags: &[String],
         new_tag_input: &mut String,
-    ) {
+    ) -> Option<InspectorAction> {
+        let mut action = None;
         ui.group(|ui| {
             ui.label(RichText::new("TAGS").strong().size(11.0).color(TEXT_SECONDARY));
             ui.add_space(4.0);
@@ -104,6 +112,7 @@ impl TagsSection {
                 if let Some(tag_name) = to_remove {
                     vid.tags.retain(|t| t != &tag_name);
                     let _ = db.remove_tag(vid.id, &tag_name);
+                    action = Some(InspectorAction::BatchRemoveTag(tag_name));
                 }
             });
 
@@ -122,6 +131,7 @@ impl TagsSection {
                     if !vid.tags.contains(&tag) {
                         vid.tags.push(tag.clone());
                         let _ = db.add_tag(vid.id, &tag);
+                        action = Some(InspectorAction::BatchAddTag(tag));
                     }
                     new_tag_input.clear();
                 }
@@ -137,18 +147,21 @@ impl TagsSection {
                         if ui.small_button(format!("+{t}")).clicked() {
                             vid.tags.push(t.clone());
                             let _ = db.add_tag(vid.id, t);
+                            action = Some(InspectorAction::BatchAddTag(t.clone()));
                         }
                     }
                 });
             }
         });
+        action
     }
 }
 
 pub struct NotesSection;
 
 impl NotesSection {
-    pub fn show(ui: &mut Ui, vid: &mut VideoRecord, db: &Database) {
+    pub fn show(ui: &mut Ui, vid: &mut VideoRecord, db: &Database) -> Option<InspectorAction> {
+        let mut action = None;
         ui.group(|ui| {
             ui.label(RichText::new("NOTES").strong().size(11.0).color(TEXT_SECONDARY));
             ui.add_space(4.0);
@@ -160,15 +173,18 @@ impl NotesSection {
             );
             if response.changed() {
                 let _ = db.set_notes(vid.id, &vid.notes);
+                action = Some(InspectorAction::BatchSetNotes(vid.notes.clone()));
             }
         });
+        action
     }
 }
 
 pub struct ProductionSlateSection;
 
 impl ProductionSlateSection {
-    pub fn show(ui: &mut Ui, vid: &mut VideoRecord, db: &Database) {
+    pub fn show(ui: &mut Ui, vid: &mut VideoRecord, db: &Database) -> Option<InspectorAction> {
+        let mut action = None;
         ui.group(|ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("🎬 PRODUCTION SLATE").strong().size(11.0).color(Color32::from_rgb(245, 158, 11)));
@@ -237,7 +253,15 @@ impl ProductionSlateSection {
                     vid.location.as_deref(),
                     vid.camera_unit.as_deref(),
                 );
+                action = Some(InspectorAction::BatchSetSlate {
+                    scene: vid.scene.clone(),
+                    shot: vid.shot.clone(),
+                    take: vid.take.clone(),
+                    location: vid.location.clone(),
+                    camera_unit: vid.camera_unit.clone(),
+                });
             }
         });
+        action
     }
 }

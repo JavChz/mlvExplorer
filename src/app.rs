@@ -20,6 +20,7 @@ pub struct MlvExplorerApp {
     view_mode: ViewMode,
     videos: Vec<VideoRecord>,
     selected_video_idx: Option<usize>,
+    selected_indices: Vec<usize>,
     filter: FilterCriteria,
     facets: Facets,
     all_tags: Vec<String>,
@@ -35,6 +36,7 @@ pub struct MlvExplorerApp {
     player_view: PlayerView,
     inspector: Inspector,
     catalog_dialog: CatalogDialog,
+    delete_confirm_dialog: DeleteConfirmDialog,
 
     // Background Importer
     import_tx: crossbeam_channel::Sender<ImportMessage>,
@@ -71,6 +73,7 @@ impl MlvExplorerApp {
             view_mode: ViewMode::Grid,
             videos: Vec::new(),
             selected_video_idx: None,
+            selected_indices: Vec::new(),
             filter: FilterCriteria::default(),
             facets: Facets::default(),
             all_tags: Vec::new(),
@@ -82,6 +85,7 @@ impl MlvExplorerApp {
             player_view: PlayerView::default(),
             inspector: Inspector::default(),
             catalog_dialog: CatalogDialog::default(),
+            delete_confirm_dialog: DeleteConfirmDialog::default(),
             import_tx,
             import_rx,
             import_progress: None,
@@ -122,6 +126,15 @@ impl MlvExplorerApp {
                 if idx >= self.videos.len() {
                     self.selected_video_idx = if self.videos.is_empty() { None } else { Some(0) };
                 }
+            }
+            // Keep selected_indices valid within bounds
+            self.selected_indices.retain(|&i| i < self.videos.len());
+            if self.selected_indices.is_empty() {
+                if let Some(idx) = self.selected_video_idx {
+                    self.selected_indices.push(idx);
+                }
+            } else if self.selected_video_idx.is_none() {
+                self.selected_video_idx = self.selected_indices.first().copied();
             }
         }
 
@@ -219,6 +232,101 @@ impl MlvExplorerApp {
         }
     }
 
+    /// Open confirmation dialog to delete/remove specified indices
+    pub fn prompt_delete(&mut self, mode: DeleteMode, indices: Vec<usize>) {
+        if indices.is_empty() {
+            return;
+        }
+        let file_names: Vec<String> = indices
+            .iter()
+            .filter_map(|&idx| self.videos.get(idx).map(|v| v.file_name.clone()))
+            .collect();
+        self.delete_confirm_dialog.open(mode, indices, file_names);
+    }
+
+    /// Execute removal of clips from catalog
+    pub fn execute_remove_from_catalog(&mut self, indices: &[usize]) {
+        let video_ids: Vec<i64> = indices
+            .iter()
+            .filter_map(|&idx| self.videos.get(idx).map(|v| v.id))
+            .collect();
+        if video_ids.is_empty() {
+            return;
+        }
+
+        match self.db.remove_videos(&video_ids) {
+            Ok(count) => {
+                self.status_bar_text = format!("Removed {} clip(s) from catalog.", count);
+                self.selected_indices.clear();
+                self.selected_video_idx = None;
+                self.reload_catalog();
+            }
+            Err(e) => {
+                self.status_bar_text = format!("Error removing clips from catalog: {e}");
+            }
+        }
+    }
+
+    /// Execute moving clips (including any spanned slices) to OS Trash/Recycle Bin and remove from catalog
+    pub fn execute_move_to_trash(&mut self, indices: &[usize]) {
+        let mut all_files_to_trash: Vec<PathBuf> = Vec::new();
+        let mut video_ids: Vec<i64> = Vec::new();
+
+        for &idx in indices {
+            if let Some(vid) = self.videos.get(idx) {
+                video_ids.push(vid.id);
+                let main_path = PathBuf::from(&vid.file_path);
+                if main_path.exists() {
+                    all_files_to_trash.push(main_path.clone());
+                }
+
+                // Check for companion spanned chunks (.M00, .M01, etc.)
+                for chunk_num in 0..100 {
+                    let p_upper = main_path.with_extension(format!("M{:02}", chunk_num));
+                    let p_lower = main_path.with_extension(format!("m{:02}", chunk_num));
+                    if p_upper.exists() {
+                        all_files_to_trash.push(p_upper);
+                    } else if p_lower.exists() {
+                        all_files_to_trash.push(p_lower);
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let mut trash_errors = Vec::new();
+        let mut trashed_count = 0;
+
+        for path in &all_files_to_trash {
+            match trash::delete(path) {
+                Ok(_) => {
+                    trashed_count += 1;
+                }
+                Err(e) => {
+                    trash_errors.push(format!("{}: {e}", path.file_name().unwrap_or_default().to_string_lossy()));
+                }
+            }
+        }
+
+        // Always remove successfully processed video entries from catalog
+        let _ = self.db.remove_videos(&video_ids);
+        self.selected_indices.clear();
+        self.selected_video_idx = None;
+        self.reload_catalog();
+
+        if trash_errors.is_empty() {
+            self.status_bar_text = format!("Moved {} file(s) to Trash and removed from catalog.", trashed_count);
+        } else {
+            self.status_bar_text = format!(
+                "Moved {} files to Trash with {} error(s): {}",
+                trashed_count,
+                trash_errors.len(),
+                trash_errors.join(", ")
+            );
+        }
+    }
+
     /// Handle drag-and-drop file imports from OS
     fn handle_drag_and_drop(&mut self, ctx: &egui::Context) {
         let dropped_files = ctx.input(|i| i.raw.dropped_files.clone());
@@ -262,54 +370,102 @@ impl MlvExplorerApp {
             }
         }
 
+        // Ctrl+D / Cmd+D: Deselect all clips
+        if (input.modifiers.command || input.modifiers.ctrl) && input.key_pressed(egui::Key::D) {
+            self.selected_indices.clear();
+            self.selected_video_idx = None;
+        }
+
+        // Delete / Backspace: Remove selected clip(s) from catalog (with confirmation)
+        if !self.delete_confirm_dialog.is_open && (input.key_pressed(egui::Key::Delete) || input.key_pressed(egui::Key::Backspace)) {
+            let target_indices = if !self.selected_indices.is_empty() {
+                self.selected_indices.clone()
+            } else if let Some(idx) = self.selected_video_idx {
+                vec![idx]
+            } else {
+                Vec::new()
+            };
+            if !target_indices.is_empty() {
+                self.prompt_delete(DeleteMode::RemoveFromCatalog, target_indices);
+            }
+        }
+
         // Navigation in Grid (Left / Right / Up / Down)
         if self.view_mode == ViewMode::Grid && !self.videos.is_empty() {
             if input.key_pressed(egui::Key::ArrowRight) {
-                if let Some(idx) = self.selected_video_idx {
-                    if idx + 1 < self.videos.len() {
-                        self.selected_video_idx = Some(idx + 1);
-                    }
-                } else {
-                    self.selected_video_idx = Some(0);
+                let next_idx = match self.selected_video_idx {
+                    Some(idx) if idx + 1 < self.videos.len() => Some(idx + 1),
+                    Some(idx) => Some(idx),
+                    None => Some(0),
+                };
+                if let Some(idx) = next_idx {
+                    self.selected_video_idx = Some(idx);
+                    self.selected_indices = vec![idx];
                 }
             }
             if input.key_pressed(egui::Key::ArrowLeft) {
-                if let Some(idx) = self.selected_video_idx {
-                    if idx > 0 {
-                        self.selected_video_idx = Some(idx - 1);
-                    }
+                let prev_idx = match self.selected_video_idx {
+                    Some(idx) if idx > 0 => Some(idx - 1),
+                    Some(idx) => Some(idx),
+                    None => Some(0),
+                };
+                if let Some(idx) = prev_idx {
+                    self.selected_video_idx = Some(idx);
+                    self.selected_indices = vec![idx];
                 }
             }
         }
 
-        // Rating & Flags shortcuts on selected video
-        if let Some(idx) = self.selected_video_idx {
-            if let Some(video) = self.videos.get_mut(idx) {
-                let mut rating_to_set = None;
-                if input.key_pressed(egui::Key::Num1) { rating_to_set = Some(1); }
-                if input.key_pressed(egui::Key::Num2) { rating_to_set = Some(2); }
-                if input.key_pressed(egui::Key::Num3) { rating_to_set = Some(3); }
-                if input.key_pressed(egui::Key::Num4) { rating_to_set = Some(4); }
-                if input.key_pressed(egui::Key::Num5) { rating_to_set = Some(5); }
-                if input.key_pressed(egui::Key::Num0) { rating_to_set = Some(0); }
+        // Rating & Flags shortcuts on selected video(s)
+        let targets = if !self.selected_indices.is_empty() {
+            self.selected_indices.clone()
+        } else if let Some(idx) = self.selected_video_idx {
+            vec![idx]
+        } else {
+            Vec::new()
+        };
 
-                if let Some(r) = rating_to_set {
-                    video.rating = r;
-                    let _ = self.db.set_rating(video.id, r);
-                }
+        if !targets.is_empty() {
+            let mut rating_to_set = None;
+            if input.key_pressed(egui::Key::Num1) { rating_to_set = Some(1); }
+            if input.key_pressed(egui::Key::Num2) { rating_to_set = Some(2); }
+            if input.key_pressed(egui::Key::Num3) { rating_to_set = Some(3); }
+            if input.key_pressed(egui::Key::Num4) { rating_to_set = Some(4); }
+            if input.key_pressed(egui::Key::Num5) { rating_to_set = Some(5); }
+            if input.key_pressed(egui::Key::Num0) { rating_to_set = Some(0); }
 
-                // Flags: P -> Pick, X -> Reject, U -> Unflag
-                if input.key_pressed(egui::Key::P) {
-                    video.flag = PickFlag::Picked;
-                    let _ = self.db.set_flag(video.id, PickFlag::Picked);
+            if let Some(r) = rating_to_set {
+                for &idx in &targets {
+                    if let Some(video) = self.videos.get_mut(idx) {
+                        video.rating = r;
+                        let _ = self.db.set_rating(video.id, r);
+                    }
                 }
-                if input.key_pressed(egui::Key::X) {
-                    video.flag = PickFlag::Rejected;
-                    let _ = self.db.set_flag(video.id, PickFlag::Rejected);
+            }
+
+            // Flags: P -> Pick, X -> Reject, U -> Unflag
+            if input.key_pressed(egui::Key::P) {
+                for &idx in &targets {
+                    if let Some(video) = self.videos.get_mut(idx) {
+                        video.flag = PickFlag::Picked;
+                        let _ = self.db.set_flag(video.id, PickFlag::Picked);
+                    }
                 }
-                if input.key_pressed(egui::Key::U) {
-                    video.flag = PickFlag::Unflagged;
-                    let _ = self.db.set_flag(video.id, PickFlag::Unflagged);
+            }
+            if input.key_pressed(egui::Key::X) {
+                for &idx in &targets {
+                    if let Some(video) = self.videos.get_mut(idx) {
+                        video.flag = PickFlag::Rejected;
+                        let _ = self.db.set_flag(video.id, PickFlag::Rejected);
+                    }
+                }
+            }
+            if input.key_pressed(egui::Key::U) {
+                for &idx in &targets {
+                    if let Some(video) = self.videos.get_mut(idx) {
+                        video.flag = PickFlag::Unflagged;
+                        let _ = self.db.set_flag(video.id, PickFlag::Unflagged);
+                    }
                 }
             }
         }
@@ -492,14 +648,94 @@ impl eframe::App for MlvExplorerApp {
                 .default_width(280.0)
                 .width_range(240.0..=380.0)
                 .show(ctx, |ui| {
+                    let sel_indices = if !self.selected_indices.is_empty() {
+                        self.selected_indices.clone()
+                    } else if let Some(idx) = self.selected_video_idx {
+                        vec![idx]
+                    } else {
+                        Vec::new()
+                    };
+                    let selected_count = sel_indices.len();
                     let mut sel_vid = self.selected_video_idx.and_then(|idx| self.videos.get_mut(idx));
-                    if let Some(act) = self.inspector.show(ui, sel_vid.as_deref_mut(), &self.db, &self.all_tags) {
+                    if let Some(act) = self.inspector.show(ui, sel_vid.as_deref_mut(), selected_count, &self.db, &self.all_tags) {
                         match act {
                             crate::ui::inspector::InspectorAction::OpenInMlvApp => {
                                 if let Some(idx) = self.selected_video_idx {
                                     if let Some(vid) = self.videos.get(idx) {
                                         let path = PathBuf::from(&vid.file_path);
                                         self.open_in_mlv_app(&path);
+                                    }
+                                }
+                            }
+                            crate::ui::inspector::InspectorAction::BatchSetRating(rating) => {
+                                for &idx in &sel_indices {
+                                    if let Some(vid) = self.videos.get_mut(idx) {
+                                        vid.rating = rating;
+                                        let _ = self.db.set_rating(vid.id, rating);
+                                    }
+                                }
+                            }
+                            crate::ui::inspector::InspectorAction::BatchSetFlag(flag) => {
+                                for &idx in &sel_indices {
+                                    if let Some(vid) = self.videos.get_mut(idx) {
+                                        vid.flag = flag;
+                                        let _ = self.db.set_flag(vid.id, flag);
+                                    }
+                                }
+                            }
+                            crate::ui::inspector::InspectorAction::BatchAddTag(tag) => {
+                                for &idx in &sel_indices {
+                                    if let Some(vid) = self.videos.get_mut(idx) {
+                                        if !vid.tags.contains(&tag) {
+                                            vid.tags.push(tag.clone());
+                                            let _ = self.db.add_tag(vid.id, &tag);
+                                        }
+                                    }
+                                }
+                                if !self.all_tags.contains(&tag) {
+                                    self.all_tags.push(tag);
+                                }
+                            }
+                            crate::ui::inspector::InspectorAction::BatchRemoveTag(tag) => {
+                                for &idx in &sel_indices {
+                                    if let Some(vid) = self.videos.get_mut(idx) {
+                                        vid.tags.retain(|t| t != &tag);
+                                        let _ = self.db.remove_tag(vid.id, &tag);
+                                    }
+                                }
+                            }
+                            crate::ui::inspector::InspectorAction::BatchSetNotes(notes) => {
+                                for &idx in &sel_indices {
+                                    if let Some(vid) = self.videos.get_mut(idx) {
+                                        vid.notes = notes.clone();
+                                        let _ = self.db.set_notes(vid.id, &notes);
+                                    }
+                                }
+                            }
+                            crate::ui::inspector::InspectorAction::BatchSetSlate { scene, shot, take, location, camera_unit } => {
+                                for &idx in &sel_indices {
+                                    if let Some(vid) = self.videos.get_mut(idx) {
+                                        vid.scene = scene.clone();
+                                        vid.shot = shot.clone();
+                                        vid.take = take.clone();
+                                        vid.location = location.clone();
+                                        vid.camera_unit = camera_unit.clone();
+                                        let _ = self.db.set_production_slate(
+                                            vid.id,
+                                            scene.as_deref(),
+                                            shot.as_deref(),
+                                            take.as_deref(),
+                                            location.as_deref(),
+                                            camera_unit.as_deref(),
+                                        );
+                                    }
+                                }
+                            }
+                            crate::ui::inspector::InspectorAction::BatchSetStretch(stretch) => {
+                                for &idx in &sel_indices {
+                                    if let Some(vid) = self.videos.get_mut(idx) {
+                                        vid.stretch_factor = stretch;
+                                        let _ = self.db.set_stretch_factor(vid.id, stretch);
                                     }
                                 }
                             }
@@ -520,16 +756,37 @@ impl eframe::App for MlvExplorerApp {
                     if let Some(action) = self.grid_view.show(
                         ui,
                         &self.videos,
-                        self.selected_video_idx,
+                        &self.selected_indices,
                         &mut self.thumb_mgr,
                         &mut self.filter.sort,
                     ) {
                         match action {
-                            GridAction::Select(idx) => {
-                                self.selected_video_idx = Some(idx);
+                            GridAction::Select { index, extend, toggle } => {
+                                if extend {
+                                    // Shift-click range selection
+                                    let anchor = self.selected_video_idx.unwrap_or(index);
+                                    let start = anchor.min(index);
+                                    let end = anchor.max(index);
+                                    self.selected_indices = (start..=end).collect();
+                                    self.selected_video_idx = Some(index);
+                                } else if toggle {
+                                    // Ctrl/Cmd-click toggle selection
+                                    if let Some(pos) = self.selected_indices.iter().position(|&i| i == index) {
+                                        self.selected_indices.remove(pos);
+                                        self.selected_video_idx = self.selected_indices.last().copied();
+                                    } else {
+                                        self.selected_indices.push(index);
+                                        self.selected_video_idx = Some(index);
+                                    }
+                                } else {
+                                    // Normal single click
+                                    self.selected_indices = vec![index];
+                                    self.selected_video_idx = Some(index);
+                                }
                             }
                             GridAction::OpenPlayer(idx) => {
                                 self.selected_video_idx = Some(idx);
+                                self.selected_indices = vec![idx];
                                 self.view_mode = ViewMode::Player;
                                 self.ensure_playback(ctx);
                             }
@@ -549,10 +806,17 @@ impl eframe::App for MlvExplorerApp {
                             }
                             GridAction::OpenInMlvApp(idx) => {
                                 self.selected_video_idx = Some(idx);
+                                self.selected_indices = vec![idx];
                                 if let Some(vid) = self.videos.get(idx) {
                                     let path = PathBuf::from(&vid.file_path);
                                     self.open_in_mlv_app(&path);
                                 }
+                            }
+                            GridAction::RequestRemoveFromCatalog(indices) => {
+                                self.prompt_delete(DeleteMode::RemoveFromCatalog, indices);
+                            }
+                            GridAction::RequestMoveToTrash(indices) => {
+                                self.prompt_delete(DeleteMode::MoveToTrash, indices);
                             }
                             GridAction::SortChanged => {
                                 self.reload_catalog();
@@ -623,6 +887,23 @@ impl eframe::App for MlvExplorerApp {
         // 6. Catalog Backup & Import Modal
         if self.catalog_dialog.show(ctx, &self.db) {
             self.reload_catalog();
+        }
+
+        // 7. Delete / Remove Confirmation Modal
+        if let Some(res) = self.delete_confirm_dialog.show(ctx) {
+            match res {
+                DeleteConfirmResult::Confirmed { mode, target_indices } => {
+                    match mode {
+                        DeleteMode::RemoveFromCatalog => {
+                            self.execute_remove_from_catalog(&target_indices);
+                        }
+                        DeleteMode::MoveToTrash => {
+                            self.execute_move_to_trash(&target_indices);
+                        }
+                    }
+                }
+                DeleteConfirmResult::Cancelled => {}
+            }
         }
     }
 }

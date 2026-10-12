@@ -12,11 +12,12 @@ impl Card {
         index: usize,
         vid: &VideoRecord,
         is_selected: bool,
+        selected_indices: &[usize],
         card_w: f32,
         card_h: f32,
         thumb_h: f32,
         thumb_mgr: &mut ThumbnailManager,
-    ) -> Option<GridAction> {
+    ) -> (Option<GridAction>, Rect) {
         let mut action = None;
 
         let (rect, response) = ui.allocate_exact_size(
@@ -25,11 +26,24 @@ impl Card {
         );
 
         if response.clicked() {
-            action = Some(GridAction::Select(index));
+            let modifiers = ui.input(|i| i.modifiers);
+            action = Some(GridAction::Select {
+                index,
+                extend: modifiers.shift,
+                toggle: modifiers.ctrl || modifiers.command,
+            });
         }
         if response.double_clicked() {
             action = Some(GridAction::OpenPlayer(index));
         }
+
+        // When right-clicked on an unselected item, the delete action targets this item.
+        // If right-clicked on an already-selected item, it targets all currently selected items.
+        let target_indices = if is_selected && selected_indices.len() > 1 {
+            selected_indices.to_vec()
+        } else {
+            vec![index]
+        };
 
         response.context_menu(|ui| {
             if ui.button("▶ Open in Player").clicked() {
@@ -43,6 +57,23 @@ impl Card {
             ui.separator();
             if ui.button(if vid.flag == PickFlag::Picked { "🏳 Remove Pick" } else { "🏳 Pick" }).clicked() {
                 action = Some(GridAction::TogglePick(vid.id));
+                ui.close_menu();
+            }
+            ui.separator();
+            let count_label = if target_indices.len() > 1 {
+                format!(" ({} clips)", target_indices.len())
+            } else {
+                String::new()
+            };
+            if ui.button(format!("🗑 Remove from Catalog{}", count_label)).clicked() {
+                action = Some(GridAction::RequestRemoveFromCatalog(target_indices.clone()));
+                ui.close_menu();
+            }
+            if ui.button(
+                egui::RichText::new(format!("⚠️ Move to Trash{}", count_label))
+                    .color(Color32::from_rgb(240, 100, 100))
+            ).clicked() {
+                action = Some(GridAction::RequestMoveToTrash(target_indices.clone()));
                 ui.close_menu();
             }
         });
@@ -256,6 +287,6 @@ impl Card {
             );
         }
 
-        action
+        (action, rect)
     }
 }

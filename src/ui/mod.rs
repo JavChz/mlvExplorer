@@ -1,4 +1,5 @@
 pub mod catalog_dialog;
+pub mod delete_dialog;
 pub mod grid;
 pub mod inspector;
 pub mod navigator;
@@ -8,6 +9,7 @@ pub mod theme;
 pub mod top_bar;
 
 pub use catalog_dialog::CatalogDialog;
+pub use delete_dialog::{DeleteConfirmDialog, DeleteConfirmResult, DeleteMode};
 pub use grid::{GridAction, GridView};
 pub use inspector::Inspector;
 pub use navigator::Navigator;

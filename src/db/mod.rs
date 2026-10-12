@@ -141,6 +141,11 @@ impl Database {
     }
 
     #[inline]
+    pub fn remove_videos(&self, video_ids: &[i64]) -> Result<usize> {
+        self.queries().remove_videos(video_ids)
+    }
+
+    #[inline]
     pub fn get_all_tags(&self) -> Result<Vec<TagRecord>> {
         self.queries().get_all_tags()
     }

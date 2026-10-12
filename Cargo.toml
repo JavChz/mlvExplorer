@@ -37,6 +37,7 @@ open = "5.3"
 chrono = { version = "0.4", features = ["serde"] }
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 rodio = "0.19"
+trash = "5.2"
 
 [profile.release]
 opt-level = 3
