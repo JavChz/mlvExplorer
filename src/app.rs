@@ -226,9 +226,11 @@ impl MlvExplorerApp {
                     if let Ok(mut a) = pb.audio.lock() {
                         a.set_muted(self.player_view.is_muted);
                         a.set_volume(self.player_view.volume);
+                        a.set_speed(self.player_view.playback_speed);
                     }
                     self.current_playback = Some((vid.id, pb));
                     self.player_view.current_frame = 0;
+                    self.player_view.is_playing = false;
                     true
                 }
                 Err(e) => {

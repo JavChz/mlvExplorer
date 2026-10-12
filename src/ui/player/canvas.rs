@@ -115,29 +115,14 @@ impl Canvas {
                 let u_size = cb_rect.width() / display_rect.width().max(1.0);
                 let v_size = cb_rect.height() / display_rect.height().max(1.0);
 
-                let mut m = camera_to_srgb(&playback.source.clip.meta);
-
-                let t = view.wb_temperature / 50.0;
-                let r_gain = (2.0f32).powf(t * 0.45);
-                let b_gain = (2.0f32).powf(-t * 0.45);
-
-                let g = view.wb_tint / 50.0;
-                let g_gain = (2.0f32).powf(-g * 0.45);
-
-                for row in &mut m {
-                    row[0] *= r_gain;
-                    row[1] *= g_gain;
-                    row[2] *= b_gain;
-                }
-
+                let m = camera_to_srgb(&playback.source.clip.meta);
                 let (rx, ry) = playback.source.clip.meta.red_offset();
-                let exp_mult = (2.0f32).powf(view.exposure_ev);
 
                 let uniforms = ViewUniforms {
                     m0: [m[0][0], m[0][1], m[0][2], 0.0],
                     m1: [m[1][0], m[1][1], m[1][2], 0.0],
                     m2: [m[2][0], m[2][1], m[2][2], 0.0],
-                    levels: [frame.black, frame.white, exp_mult, 1.0],
+                    levels: [frame.black, frame.white, 1.0, 1.0],
                     info: [rx, ry, frame.width, frame.height],
                     view: [
                         u_start.clamp(0.0, 1.0),

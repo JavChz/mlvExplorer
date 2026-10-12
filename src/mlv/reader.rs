@@ -137,7 +137,16 @@ impl MlvClip {
         frames.sort_by_key(|f| f.frame_number);
         frames.dedup_by_key(|f| f.frame_number);
 
-        audio_frames.sort_by_key(|a| a.timestamp);
+        if !audio_frames.is_empty() {
+            let has_nonzero_frames = audio_frames.iter().any(|a| a.frame_number > 0);
+            if has_nonzero_frames {
+                audio_frames.sort_by_key(|a| (a.frame_number, a.timestamp));
+                audio_frames.dedup_by_key(|a| a.frame_number);
+            } else {
+                audio_frames.sort_by_key(|a| a.timestamp);
+                audio_frames.dedup_by_key(|a| a.timestamp);
+            }
+        }
 
         meta.video_guid = guid.unwrap_or(0);
         meta.chunk_count = valid_chunks.len() as u16;

@@ -65,6 +65,9 @@ impl PlayerView {
         if !editing_text && ui.input(|i| i.key_pressed(egui::Key::Space)) {
             self.is_playing = !self.is_playing;
             self.last_frame_time = Instant::now();
+            if self.is_playing && self.current_frame + 1 >= total_frames {
+                self.current_frame = 0;
+            }
             let time_sec = self.current_frame as f32 / video.fps.max(1.0);
             if let Ok(mut a) = playback.audio.lock() {
                 if self.is_playing {
@@ -148,33 +151,52 @@ impl PlayerView {
         let frame_duration = std::time::Duration::from_secs_f32(1.0 / effective_fps);
 
         if self.is_playing {
-            let next_target = if self.current_frame + 1 < total_frames {
-                self.current_frame + 1
-            } else if self.is_looping {
-                0
-            } else {
-                self.current_frame
-            };
+            let has_audio = playback.audio.lock().map(|a| a.has_audio()).unwrap_or(false);
+            if has_audio {
+                let mut should_loop = false;
+                let mut should_stop = false;
 
-            let elapsed = self.last_frame_time.elapsed();
-            if elapsed >= frame_duration {
-                let is_ready = playback.is_ready(next_target);
-                if is_ready || elapsed >= frame_duration + std::time::Duration::from_millis(15) {
+                if let Ok(mut a) = playback.audio.lock() {
+                    a.set_speed(self.playback_speed);
+
+                    if a.is_finished() {
+                        if self.is_looping {
+                            should_loop = true;
+                        } else {
+                            should_stop = true;
+                        }
+                    } else if let Some(audio_time) = a.current_playback_time() {
+                        let target_frame = (audio_time * video.fps).floor() as usize;
+                        if target_frame >= total_frames {
+                            if self.is_looping {
+                                should_loop = true;
+                            } else {
+                                should_stop = true;
+                            }
+                        } else {
+                            self.current_frame = target_frame;
+                        }
+                    }
+
+                    if should_loop {
+                        self.current_frame = 0;
+                        a.seek(0.0, true);
+                    } else if should_stop {
+                        self.is_playing = false;
+                        a.pause();
+                    }
+                }
+            } else {
+                let elapsed = self.last_frame_time.elapsed();
+                if elapsed >= frame_duration {
                     self.last_frame_time = Instant::now();
                     if self.current_frame + 1 < total_frames {
                         self.current_frame += 1;
                     } else if self.is_looping {
                         self.current_frame = 0;
-                        if let Ok(mut a) = playback.audio.lock() {
-                            a.seek(0.0, true);
-                        }
                     } else {
                         self.is_playing = false;
-                        if let Ok(mut a) = playback.audio.lock() {
-                            a.pause();
-                        }
                     }
-                    action = Some(PlayerAction::Seek(self.current_frame));
                 }
             }
             ui.ctx().request_repaint();

@@ -101,6 +101,9 @@ impl TransportBar {
                     if ui.add(play_btn).on_hover_text(play_tip).clicked() {
                         view.is_playing = !view.is_playing;
                         view.last_frame_time = Instant::now();
+                        if view.is_playing && view.current_frame + 1 >= total_frames {
+                            view.current_frame = 0;
+                        }
                         let time_sec = view.current_frame as f32 / video.fps.max(1.0);
                         if let Ok(mut a) = playback.audio.lock() {
                             if view.is_playing {
@@ -140,6 +143,9 @@ impl TransportBar {
                         let is_active = (view.playback_speed - spd).abs() < 0.05;
                         if widgets::toggle_button(ui, is_active, format!("{}x", spd)).clicked() {
                             view.playback_speed = spd;
+                            if let Ok(mut a) = playback.audio.lock() {
+                                a.set_speed(spd);
+                            }
                         }
                     }
 

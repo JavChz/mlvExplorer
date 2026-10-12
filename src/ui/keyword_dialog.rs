@@ -185,11 +185,18 @@ impl KeywordManagerDialog {
                     );
 
                     if ui.input(|i| i.pointer.any_released()) && is_hovered {
-                        let _ = db.set_tag_parent(dragged_id, None);
-                        if let Some(ref name) = self.dragged_tag_name {
-                            self.status_message = Some((format!("Promoted '{name}' to top-level root."), false));
+                        match db.set_tag_parent(dragged_id, None) {
+                            Ok(_) => {
+                                if let Some(ref name) = self.dragged_tag_name {
+                                    self.status_message = Some((format!("Promoted '{name}' to top-level root."), false));
+                                }
+                                action = Some(KeywordManagerAction::Changed);
+                                ui.ctx().request_repaint();
+                            }
+                            Err(e) => {
+                                self.status_message = Some((format!("Error moving keyword to root: {e}"), true));
+                            }
                         }
-                        action = Some(KeywordManagerAction::Changed);
                         self.dragged_tag_id = None;
                         self.dragged_tag_name = None;
                     }
@@ -341,7 +348,14 @@ impl KeywordManagerDialog {
 
         // Check if this node is a valid drop target
         let can_be_drop_target = if let Some(dragged_id) = self.dragged_tag_id {
-            dragged_id != node.id && !Self::is_node_or_descendant(node, dragged_id, full_tree)
+            if dragged_id == node.id {
+                false
+            } else if let Some(dragged_node) = Self::find_node_in_tree(full_tree, dragged_id) {
+                // Cannot drop dragged node onto itself or any of its own descendants (would create a cycle)
+                !Self::is_descendant_of(dragged_node, node.id)
+            } else {
+                true
+            }
         } else {
             false
         };
@@ -351,13 +365,23 @@ impl KeywordManagerDialog {
         // Handle drop event on this node
         if is_drop_hovered && ui.input(|i| i.pointer.any_released()) {
             if let Some(dragged_id) = self.dragged_tag_id {
-                let _ = db.set_tag_parent(dragged_id, Some(node.id));
-                let name = self.dragged_tag_name.clone().unwrap_or_else(|| "Keyword".to_string());
-                self.status_message = Some((
-                    format!("Nested '{name}' under '{}'", node.name),
-                    false,
-                ));
-                *action = Some(KeywordManagerAction::Changed);
+                match db.set_tag_parent(dragged_id, Some(node.id)) {
+                    Ok(_) => {
+                        let name = self.dragged_tag_name.clone().unwrap_or_else(|| "Keyword".to_string());
+                        self.status_message = Some((
+                            format!("Nested '{name}' under '{}'", node.name),
+                            false,
+                        ));
+                        *action = Some(KeywordManagerAction::Changed);
+                        ui.ctx().request_repaint();
+                    }
+                    Err(e) => {
+                        self.status_message = Some((
+                            format!("Error moving keyword: {e}"),
+                            true,
+                        ));
+                    }
+                }
                 self.dragged_tag_id = None;
                 self.dragged_tag_name = None;
             }
@@ -499,9 +523,16 @@ impl KeywordManagerDialog {
             // Quick Move to Root (Un-nest) if currently nested
             if node.parent_id.is_some() {
                 if widgets::icon_button(row_ui, icon::ARROW_UP_RIGHT, false, "Promote to Root (Un-nest)").clicked() {
-                    let _ = db.set_tag_parent(node.id, None);
-                    self.status_message = Some((format!("Promoted '{}' to top-level root.", node.name), false));
-                    *action = Some(KeywordManagerAction::Changed);
+                    match db.set_tag_parent(node.id, None) {
+                        Ok(_) => {
+                            self.status_message = Some((format!("Promoted '{}' to top-level root.", node.name), false));
+                            *action = Some(KeywordManagerAction::Changed);
+                            ui.ctx().request_repaint();
+                        }
+                        Err(e) => {
+                            self.status_message = Some((format!("Error promoting keyword: {e}"), true));
+                        }
+                    }
                 }
             }
 
@@ -513,16 +544,37 @@ impl KeywordManagerDialog {
                     .width(130.0)
                     .show_ui(row_ui, |ui| {
                         if ui.selectable_label(node.parent_id.is_none(), "Root (Top Level)").clicked() {
-                            let _ = db.set_tag_parent(node.id, None);
-                            *action = Some(KeywordManagerAction::Changed);
+                            match db.set_tag_parent(node.id, None) {
+                                Ok(_) => {
+                                    *action = Some(KeywordManagerAction::Changed);
+                                    ui.ctx().request_repaint();
+                                }
+                                Err(e) => {
+                                    self.status_message = Some((format!("Error setting root: {e}"), true));
+                                }
+                            }
                             self.reparenting_tag_id = None;
                         }
                         for t in all_tags {
-                            if t.id != node.id && !Self::is_node_or_descendant(node, t.id, full_tree) {
+                            let is_disallowed = if t.id == node.id {
+                                true
+                            } else if let Some(curr_node) = Self::find_node_in_tree(full_tree, node.id) {
+                                Self::is_descendant_of(curr_node, t.id)
+                            } else {
+                                false
+                            };
+                            if !is_disallowed {
                                 let is_curr = node.parent_id == Some(t.id);
                                 if ui.selectable_label(is_curr, &t.name).clicked() {
-                                    let _ = db.set_tag_parent(node.id, Some(t.id));
-                                    *action = Some(KeywordManagerAction::Changed);
+                                    match db.set_tag_parent(node.id, Some(t.id)) {
+                                        Ok(_) => {
+                                            *action = Some(KeywordManagerAction::Changed);
+                                            ui.ctx().request_repaint();
+                                        }
+                                        Err(e) => {
+                                            self.status_message = Some((format!("Error changing parent: {e}"), true));
+                                        }
+                                    }
                                     self.reparenting_tag_id = None;
                                 }
                             }
@@ -542,17 +594,30 @@ impl KeywordManagerDialog {
         }
     }
 
-    /// Check if target_id is the node itself or one of its descendants
-    fn is_node_or_descendant(node: &TagNode, target_id: i64, full_tree: &[TagNode]) -> bool {
-        if node.id == target_id {
+    /// Check if target_id is equal to dragged_node.id or is one of dragged_node's descendants
+    fn is_descendant_of(dragged_node: &TagNode, target_id: i64) -> bool {
+        if dragged_node.id == target_id {
             return true;
         }
-        for child in &node.children {
-            if Self::is_node_or_descendant(child, target_id, full_tree) {
+        for child in &dragged_node.children {
+            if Self::is_descendant_of(child, target_id) {
                 return true;
             }
         }
         false
+    }
+
+    /// Recursively find a node by its ID in the full tree
+    fn find_node_in_tree<'a>(nodes: &'a [TagNode], id: i64) -> Option<&'a TagNode> {
+        for n in nodes {
+            if n.id == id {
+                return Some(n);
+            }
+            if let Some(found) = Self::find_node_in_tree(&n.children, id) {
+                return Some(found);
+            }
+        }
+        None
     }
 
     fn has_child_matching(&self, node: &TagNode, query: &str) -> bool {

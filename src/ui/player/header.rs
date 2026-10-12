@@ -160,43 +160,6 @@ impl HeaderBar {
                     view.zoom_mode = ZoomMode::Fit;
                     view.pan_offset = Vec2::ZERO;
                 }
-
-                widgets::toolbar_divider(ui);
-
-                // Exposure EV
-                if view.exposure_ev != 0.0 && widgets::icon_button(ui, icon::ARROW_COUNTER_CLOCKWISE, false, "Reset Exposure").clicked() {
-                    view.exposure_ev = 0.0;
-                }
-                ui.add(
-                    egui::Slider::new(&mut view.exposure_ev, -2.5..=2.5)
-                        .text("EV")
-                        .step_by(0.1)
-                        .show_value(true),
-                );
-
-                widgets::toolbar_divider(ui);
-
-                // White Balance Tint
-                if view.wb_tint != 0.0 && widgets::icon_button(ui, icon::ARROW_COUNTER_CLOCKWISE, false, "Reset Tint").clicked() {
-                    view.wb_tint = 0.0;
-                }
-                ui.add(
-                    egui::Slider::new(&mut view.wb_tint, -50.0..=50.0)
-                        .text("Tint")
-                        .step_by(1.0)
-                        .show_value(true),
-                );
-
-                // White Balance Temp
-                if view.wb_temperature != 0.0 && widgets::icon_button(ui, icon::ARROW_COUNTER_CLOCKWISE, false, "Reset Temp").clicked() {
-                    view.wb_temperature = 0.0;
-                }
-                ui.add(
-                    egui::Slider::new(&mut view.wb_temperature, -50.0..=50.0)
-                        .text("WB")
-                        .step_by(1.0)
-                        .show_value(true),
-                );
             });
         });
 

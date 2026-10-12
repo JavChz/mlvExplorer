@@ -382,8 +382,8 @@ impl<'a> Queries<'a> {
                 curr = self.conn.query_row(
                     "SELECT parent_id FROM tags WHERE id = ?1",
                     params![c],
-                    |r| r.get(0),
-                ).optional()?;
+                    |r| r.get::<_, Option<i64>>(0),
+                ).optional()?.flatten();
             }
         }
         self.conn.execute(

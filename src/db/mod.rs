@@ -341,6 +341,27 @@ mod tests {
         let res_leaf = db.get_videos(&filter).unwrap();
         assert_eq!(res_leaf.len(), 1);
 
+        // 5. Test set_tag_parent under root tag (loc_id has NULL parent_id)
+        let paris_id = db.create_tag("Paris", None).unwrap();
+        db.set_tag_parent(paris_id, Some(loc_id)).unwrap();
+
+        let tags = db.get_all_tags().unwrap();
+        let paris_tag = tags.iter().find(|t| t.id == paris_id).unwrap();
+        assert_eq!(paris_tag.parent_id, Some(loc_id));
+
+        // 6. Test promoting back to root
+        db.set_tag_parent(paris_id, None).unwrap();
+        let tags = db.get_all_tags().unwrap();
+        let paris_tag = tags.iter().find(|t| t.id == paris_id).unwrap();
+        assert_eq!(paris_tag.parent_id, None);
+
+        // 7. Test cycle prevention (Location cannot have Paris as parent if Paris is under Location)
+        db.set_tag_parent(paris_id, Some(loc_id)).unwrap();
+        db.set_tag_parent(loc_id, Some(paris_id)).unwrap();
+        let tags = db.get_all_tags().unwrap();
+        let loc_tag = tags.iter().find(|t| t.id == loc_id).unwrap();
+        assert_eq!(loc_tag.parent_id, None);
+
         // Clean up
         let _ = std::fs::remove_dir_all(&test_dir);
     }
