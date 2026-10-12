@@ -278,7 +278,6 @@ impl TopBar {
     pub fn show_toolbar(
         ui: &mut Ui,
         filter: &mut FilterCriteria,
-        card_size: &mut f32,
     ) -> (bool, Option<TopBarAction>) {
         let mut filter_changed = false;
         let mut action = None;
@@ -389,15 +388,6 @@ impl TopBar {
                 filter.flag = if is_rej { None } else { Some(PickFlag::Rejected) };
                 filter_changed = true;
             }
-
-            // 5. Card Zoom Slider
-            widgets::toolbar_divider(ui);
-            ui.label(RichText::new(icon::MAGNIFYING_GLASS).size(FONT_SMALL).color(text_muted(ui)));
-            ui.add(
-                egui::Slider::new(card_size, 160.0..=480.0)
-                    .show_value(false)
-                    .trailing_fill(true),
-            );
 
             // Right-aligned Actions: Reset filter & Import Buttons
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

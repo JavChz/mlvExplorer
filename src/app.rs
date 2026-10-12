@@ -761,7 +761,6 @@ impl eframe::App for MlvExplorerApp {
                     let (filter_changed, act) = TopBar::show_toolbar(
                         ui,
                         &mut self.filter,
-                        &mut self.grid_view.card_size,
                     );
                     toolbar_action = act;
 

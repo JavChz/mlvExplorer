@@ -1,7 +1,7 @@
 use crate::db::{Database, VideoRecord};
 use crate::ui::theme::*;
 use crate::ui::widgets::{self, icon};
-use egui::{RichText, Ui, Vec2};
+use egui::{RichText, Sense, Ui, Vec2};
 
 pub struct TechnicalSpecs;
 
@@ -19,7 +19,49 @@ impl TechnicalSpecs {
                 widgets::prop_row(ui, "Camera", vid.camera_name.as_str());
             }
             if !vid.camera_serial.is_empty() {
-                widgets::prop_row(ui, "Serial #", vid.camera_serial.as_str());
+                let id = ui.id().with(("serial_revealed", vid.id));
+                let mut revealed = ui.data(|d| d.get_temp::<bool>(id).unwrap_or(false));
+                widgets::field_row(ui, "Serial #", |ui| {
+                    let (display_text, icon_glyph, tooltip) = if revealed {
+                        (vid.camera_serial.as_str(), icon::EYE_SLASH, "Click to hide serial number")
+                    } else {
+                        ("••••••••••••", icon::EYE, "Click to reveal serial number")
+                    };
+                    let resp = ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        let text_color = if revealed { text_primary(ui) } else { text_muted(ui) };
+                        let label = ui.add(
+                            egui::Label::new(
+                                RichText::new(display_text)
+                                    .monospace()
+                                    .size(FONT_BODY)
+                                    .color(text_color)
+                            ).sense(Sense::click())
+                        );
+                        let btn = ui.add(
+                            egui::Label::new(
+                                RichText::new(icon_glyph)
+                                    .size(FONT_SMALL)
+                                    .color(text_muted(ui))
+                            ).sense(Sense::click())
+                        );
+                        label.union(btn)
+                    }).inner;
+
+                    if revealed && resp.double_clicked() {
+                        ui.ctx().output_mut(|o| o.copied_text = vid.camera_serial.clone());
+                    }
+
+                    if resp.on_hover_ui(|ui| {
+                        ui.label(tooltip);
+                        if revealed {
+                            ui.label(RichText::new("Double-click to copy").size(FONT_CAPTION).color(text_muted(ui)));
+                        }
+                    }).clicked() {
+                        revealed = !revealed;
+                        ui.data_mut(|d| d.insert_temp(id, revealed));
+                    }
+                });
             }
             if vid.lens_name.is_empty() {
                 widgets::prop_row(ui, "Lens", RichText::new("Manual lens").color(muted));
