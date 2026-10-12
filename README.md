@@ -152,8 +152,17 @@ MLV Explorer builds upon reverse engineering, research, specifications, and open
 3. **Lossless JPEG Decoder (`lj92`)**:
    - The ITU-T.81 process 14 lossless JPEG decompressor used for compressed MLV streams is based on the algorithm originally authored by **Andrew Baldwin**, with adaptations by the Magic Lantern and MLV App developer communities.
 
-4. **Rust Ecosystem**:
-   - Built on top of [`eframe` / `egui`](https://github.com/emilk/egui) for immediate-mode GUI rendering, [`wgpu`](https://github.com/gfx-rs/wgpu) for GPU acceleration, [`rusqlite`](https://github.com/rusqlite/rusqlite) for embedded catalog storage, and [`rodio`](https://github.com/RustAudio/rodio) for multi-channel audio playback.
+4. **Rust Ecosystem & Open Source Libraries**:
+   - [`eframe` / `egui`](https://github.com/emilk/egui) by Emil Ernerfeldt: Immediate-mode GUI framework powering the native desktop user interface.
+   - [`Phosphor Icons`](https://phosphoricons.com) & [`egui-phosphor`](https://github.com/lucasmerlin/hello_egui/tree/main/crates/egui-phosphor) by Tobias Fried and Helena Zhang: Flexible, comprehensive icon family powering toolbar, navigation, and inspector glyphs.
+   - [`rodio`](https://github.com/RustAudio/rodio) by Pierre Krieger and the RustAudio contributors: High-performance audio playback engine for synchronized linear PCM raw audio playback.
+   - [`rusqlite`](https://github.com/rusqlite/rusqlite): Embedded SQLite client powering instant filtering, hierarchical tags, and atomic backups.
+   - [`wgpu`](https://github.com/gfx-rs/wgpu): Portable, high-performance graphics backend (DirectX 12 / Vulkan / Metal).
+   - [`rfd`](https://github.com/PolyMeilex/rfd): Rust File Dialog for cross-platform native file and folder pickers.
+   - [`trash`](https://github.com/ArturKovacs/trash): Cross-platform safe OS Recycle Bin / Trash integration.
+   - [`crossbeam-channel`](https://github.com/crossbeam-rs/crossbeam): High-throughput lock-free concurrency channels powering background ingestion.
+   - [`image`](https://github.com/image-rs/image): Fast thumbnail JPEG encoding.
+   - [`chrono`](https://github.com/chronotope/chrono): Shooting date parsing and timeline calendar grouping.
 
 ---
 
