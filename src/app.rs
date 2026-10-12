@@ -180,7 +180,7 @@ impl MlvExplorerApp {
 
     /// Refresh camera/lens facets and keyword tag list from database
     pub fn refresh_facets(&mut self) {
-        if let Ok(facets) = self.db.facets() {
+        if let Ok(facets) = self.db.facets(&self.filter) {
             self.cameras = facets.cameras.iter().map(|c| c.name.clone()).collect();
             self.lenses = facets.lenses.iter().map(|l| l.name.clone()).collect();
             self.facets = facets;
@@ -742,35 +742,18 @@ impl eframe::App for MlvExplorerApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(is_fullscreen_player));
         }
 
-        // 1. Studio Top Menu Bar (Native File, Edit, View, Preferences, Help + Grid/Player on right)
+        // 1. Studio Top Menu Bar (Native File, Edit, View, Preferences, Help + Import & Grid/Player on right)
         if !is_fullscreen_player {
             let mut menu_action = None;
             egui::TopBottomPanel::top("app_menu_bar")
-                .exact_height(26.0)
+                .exact_height(30.0)
                 .show(ctx, |ui| {
                     let can_open_player = self.selected_video_idx.is_some();
                     let is_player_mode = self.view_mode == ViewMode::Player;
                     menu_action = TopBar::show_menu_bar(ui, is_player_mode, can_open_player);
                 });
 
-            // 2. Studio Workspace Toolbar (Search, Sort, Ratings, Flags, Import buttons)
-            let mut toolbar_action = None;
-            egui::TopBottomPanel::top("app_workspace_toolbar")
-                .exact_height(48.0)
-                .show(ctx, |ui| {
-                    let (filter_changed, act) = TopBar::show_toolbar(
-                        ui,
-                        &mut self.filter,
-                    );
-                    toolbar_action = act;
-
-                    if filter_changed {
-                        self.reload_catalog();
-                    }
-                });
-
-            let combined_action = menu_action.or(toolbar_action);
-            if let Some(act) = combined_action {
+            if let Some(act) = menu_action {
                 match act {
                     // File
                     TopBarAction::NewCatalog => {
@@ -1202,6 +1185,10 @@ impl eframe::App for MlvExplorerApp {
         egui::CentralPanel::default().frame(central_frame).show(ctx, |ui| {
             match self.view_mode {
                 ViewMode::Grid => {
+                    if TopBar::show_filter_bar(ui, &mut self.filter) {
+                        self.reload_catalog();
+                    }
+
                     if let Some(action) = self.grid_view.show(
                         ui,
                         &self.videos,

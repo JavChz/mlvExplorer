@@ -68,7 +68,7 @@ impl HeaderBar {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(4.0);
 
-                if widgets::button(ui, widgets::icon_label(icon::ARROW_SQUARE_OUT, "MLV App"))
+                if widgets::primary_button(ui, widgets::icon_label(icon::ARROW_SQUARE_OUT, "MLV App"))
                     .on_hover_text("Open directly in MLV App for grading & export")
                     .clicked()
                 {

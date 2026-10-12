@@ -211,6 +211,7 @@ pub struct Facets {
     pub lenses: Vec<Facet>,
     pub tags: Vec<Facet>,
     pub tag_tree: Vec<TagNode>,
+    pub full_tag_tree: Vec<TagNode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

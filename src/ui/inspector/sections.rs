@@ -44,9 +44,15 @@ impl OrganizationSection {
                     }
                 });
 
-                ui.add_space(6.0);
-                let btn = egui::Button::new(widgets::icon_label(icon::ARROW_SQUARE_OUT, "Open in MLV App"))
-                    .min_size(Vec2::new(ui.available_width(), CONTROL_HEIGHT + 2.0));
+                ui.add_space(8.0);
+                let btn = egui::Button::new(
+                    RichText::new(widgets::icon_label(icon::ARROW_SQUARE_OUT, "Open in MLV App"))
+                        .color(egui::Color32::WHITE)
+                        .strong(),
+                )
+                .fill(ACCENT)
+                .stroke(Stroke::NONE)
+                .min_size(Vec2::new(ui.available_width(), CONTROL_HEIGHT + 4.0));
                 if ui
                     .add(btn)
                     .on_hover_text("Open this clip in MLV App for grading and export")
@@ -231,12 +237,14 @@ impl TagsSection {
             ui.label(RichText::new("ALL KEYWORDS (Check to assign)").size(FONT_CAPTION).color(text_muted(ui)).strong());
             ui.add_space(2.0);
 
-            if facets.tag_tree.is_empty() {
+            if facets.full_tag_tree.is_empty() {
                 ui.label(RichText::new("No keywords in catalog yet.").size(FONT_SMALL).color(text_hint(ui)));
             } else {
-                for node in &facets.tag_tree {
+                for node in &facets.full_tag_tree {
                     if let Some(act) = Self::render_inspector_keyword_node(ui, node, vid, db, 0) {
-                        action = Some(act);
+                        if action.is_none() {
+                            action = Some(act);
+                        }
                     }
                 }
             }
@@ -264,70 +272,74 @@ impl TagsSection {
         let indent = depth as f32 * 14.0;
         let mut is_checked = vid.tags.contains(&node.name);
 
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            if indent > 0.0 {
-                ui.add_space(indent);
-            }
-
-            // Expand / Collapse Caret
-            if has_children {
-                let caret = if is_expanded { icon::CARET_DOWN } else { icon::CARET_RIGHT };
-                if ui.add(egui::Label::new(RichText::new(caret).size(11.0).color(text_muted(ui))).sense(Sense::click())).clicked() {
-                    is_expanded = !is_expanded;
-                    ui.data_mut(|d| d.insert_temp(id, is_expanded));
+        ui.push_id(id, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                if indent > 0.0 {
+                    ui.add_space(indent);
                 }
-            } else {
-                ui.add_space(10.0);
-            }
 
-            // Checkbox to toggle keyword on active clip
-            let cb_resp = ui.checkbox(&mut is_checked, "");
-            if cb_resp.changed() {
-                if is_checked {
-                    if !vid.tags.contains(&node.name) {
-                        vid.tags.push(node.name.clone());
-                        let _ = db.add_tag(vid.id, &node.name);
-                        action = Some(InspectorAction::BatchAddTag(node.name.clone()));
+                // Expand / Collapse Caret
+                if has_children {
+                    let caret = if is_expanded { icon::CARET_DOWN } else { icon::CARET_RIGHT };
+                    if ui.add(egui::Label::new(RichText::new(caret).size(11.0).color(text_muted(ui))).sense(Sense::click())).clicked() {
+                        is_expanded = !is_expanded;
+                        ui.data_mut(|d| d.insert_temp(id, is_expanded));
                     }
                 } else {
-                    vid.tags.retain(|t| t != &node.name);
-                    let _ = db.remove_tag(vid.id, &node.name);
-                    action = Some(InspectorAction::BatchRemoveTag(node.name.clone()));
+                    ui.add_space(10.0);
                 }
-            }
 
-            // Keyword name label
-            let text_color = if is_checked { text_primary(ui) } else { text_secondary(ui) };
-            let lbl_resp = ui.add(egui::Label::new(RichText::new(&node.name).size(FONT_BODY).color(text_color)).sense(Sense::click()));
-            if lbl_resp.clicked() {
-                // Clicking label also toggles the checkbox
-                if !is_checked {
-                    vid.tags.push(node.name.clone());
-                    let _ = db.add_tag(vid.id, &node.name);
-                    action = Some(InspectorAction::BatchAddTag(node.name.clone()));
-                } else {
-                    vid.tags.retain(|t| t != &node.name);
-                    let _ = db.remove_tag(vid.id, &node.name);
-                    action = Some(InspectorAction::BatchRemoveTag(node.name.clone()));
+                // Checkbox to toggle keyword on active clip
+                let mut toggle_to = None;
+                let cb_resp = ui.checkbox(&mut is_checked, "");
+                if cb_resp.clicked() {
+                    toggle_to = Some(is_checked);
                 }
-            }
 
-            // Right-aligned Filter Arrow Button (Lightroom style filter arrow)
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let filter_btn = ui.add(
-                    egui::Button::new(RichText::new(icon::ARROW_RIGHT).size(12.0).color(text_muted(ui)))
-                        .fill(egui::Color32::TRANSPARENT)
-                        .stroke(Stroke::NONE),
-                )
-                .on_hover_text(format!("Filter catalog by keyword '{}'", node.name));
-
-                if filter_btn.hovered() {
+                // Keyword name label
+                let text_color = if is_checked { text_primary(ui) } else { text_secondary(ui) };
+                let lbl_resp = ui.add(
+                    egui::Label::new(RichText::new(&node.name).size(FONT_BODY).color(text_color))
+                        .sense(Sense::click()),
+                );
+                if lbl_resp.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
-                if filter_btn.clicked() {
-                    action = Some(InspectorAction::FilterByTag(node.name.clone()));
+                if lbl_resp.clicked() && toggle_to.is_none() {
+                    toggle_to = Some(!is_checked);
                 }
+
+                if let Some(should_check) = toggle_to {
+                    if should_check {
+                        if !vid.tags.contains(&node.name) {
+                            vid.tags.push(node.name.clone());
+                            let _ = db.add_tag(vid.id, &node.name);
+                            action = Some(InspectorAction::BatchAddTag(node.name.clone()));
+                        }
+                    } else {
+                        vid.tags.retain(|t| t != &node.name);
+                        let _ = db.remove_tag(vid.id, &node.name);
+                        action = Some(InspectorAction::BatchRemoveTag(node.name.clone()));
+                    }
+                }
+
+                // Right-aligned Filter Arrow Button (Lightroom style filter arrow)
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let filter_btn = ui.add(
+                        egui::Button::new(RichText::new(icon::ARROW_RIGHT).size(12.0).color(text_muted(ui)))
+                            .fill(egui::Color32::TRANSPARENT)
+                            .stroke(Stroke::NONE),
+                    )
+                    .on_hover_text(format!("Filter catalog by keyword '{}'", node.name));
+
+                    if filter_btn.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if filter_btn.clicked() {
+                        action = Some(InspectorAction::FilterByTag(node.name.clone()));
+                    }
+                });
             });
         });
 
@@ -335,7 +347,9 @@ impl TagsSection {
         if has_children && is_expanded {
             for child in &node.children {
                 if let Some(sub_act) = Self::render_inspector_keyword_node(ui, child, vid, db, depth + 1) {
-                    action = Some(sub_act);
+                    if action.is_none() {
+                        action = Some(sub_act);
+                    }
                 }
             }
         }

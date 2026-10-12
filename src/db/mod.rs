@@ -88,8 +88,8 @@ impl Database {
     }
 
     #[inline]
-    pub fn facets(&self) -> Result<Facets> {
-        self.queries().facets()
+    pub fn facets(&self, filter: &FilterCriteria) -> Result<Facets> {
+        self.queries().facets(filter)
     }
 
     #[inline]
@@ -340,11 +340,9 @@ mod tests {
         filter.tag = Some("France".to_string());
         let res_leaf = db.get_videos(&filter).unwrap();
         assert_eq!(res_leaf.len(), 1);
-        println!("France tags before: {:?}", res_leaf[0].tags);
 
         db.add_tag(row_id, "Europe").unwrap();
         let res_multi = db.get_videos(&FilterCriteria::default()).unwrap();
-        println!("Multi tags: {:?}", res_multi[0].tags);
         assert_eq!(res_multi[0].tags, vec!["Europe".to_string(), "France".to_string()]);
 
         // 5. Test set_tag_parent under root tag (loc_id has NULL parent_id)
@@ -369,6 +367,80 @@ mod tests {
         assert_eq!(loc_tag.parent_id, None);
 
         // Clean up
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn test_facets_cross_filtering() {
+        let unique_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let test_dir = std::env::temp_dir().join(format!("mlv_facet_test_{unique_id}"));
+        std::fs::create_dir_all(&test_dir).unwrap();
+
+        let db_path = test_dir.join("test_facets.db");
+        let db = Database::open(&db_path).unwrap();
+
+        // Clip 1: Canon EOS 5D Mark III + EF 50mm f/1.2L + Tag "Studio"
+        let mut m1 = MlvMetadata::default();
+        m1.file_path = "C:/test/clip1.MLV".to_string();
+        m1.camera_name = "Canon EOS 5D Mark III".to_string();
+        m1.lens_name = "EF 50mm f/1.2L".to_string();
+        m1.width = 1920;
+        m1.height = 1080;
+        m1.fps_num = 24000;
+        m1.fps_den = 1000;
+        m1.frame_count = 24;
+        let id1 = db.upsert_video(&m1).unwrap();
+        db.add_tag(id1, "Studio").unwrap();
+
+        // Clip 2: Canon EOS M + EF-M 22mm f/2 + Tag "Outdoor"
+        let mut m2 = MlvMetadata::default();
+        m2.file_path = "C:/test/clip2.MLV".to_string();
+        m2.camera_name = "Canon EOS M".to_string();
+        m2.lens_name = "EF-M 22mm f/2".to_string();
+        m2.width = 1920;
+        m2.height = 1080;
+        m2.fps_num = 24000;
+        m2.fps_den = 1000;
+        m2.frame_count = 24;
+        let id2 = db.upsert_video(&m2).unwrap();
+        db.add_tag(id2, "Outdoor").unwrap();
+
+        // Unfiltered facets: both cameras, both lenses, both tags
+        let all_facets = db.facets(&FilterCriteria::default()).unwrap();
+        assert_eq!(all_facets.cameras.len(), 2);
+        assert_eq!(all_facets.lenses.len(), 2);
+        assert_eq!(all_facets.tag_tree.len(), 2);
+        assert_eq!(all_facets.full_tag_tree.len(), 2);
+
+        // Filter by Camera = "Canon EOS 5D Mark III" -> both lenses/tags stay listed, with count 0 for non-matching ones
+        let mut f_cam = FilterCriteria::default();
+        f_cam.camera = Some("Canon EOS 5D Mark III".to_string());
+        let cam_facets = db.facets(&f_cam).unwrap();
+        assert_eq!(cam_facets.lenses.len(), 2);
+        let l50 = cam_facets.lenses.iter().find(|l| l.name == "EF 50mm f/1.2L").unwrap();
+        let l22 = cam_facets.lenses.iter().find(|l| l.name == "EF-M 22mm f/2").unwrap();
+        assert_eq!(l50.count, 1);
+        assert_eq!(l22.count, 0);
+
+        assert_eq!(cam_facets.tag_tree.len(), 2);
+        let t_studio = cam_facets.tag_tree.iter().find(|t| t.name == "Studio").unwrap();
+        let t_outdoor = cam_facets.tag_tree.iter().find(|t| t.name == "Outdoor").unwrap();
+        assert_eq!(t_studio.total_count, 1);
+        assert_eq!(t_outdoor.total_count, 0);
+
+        // Filter by Lens = "EF-M 22mm f/2" -> both cameras/tags stay listed, with count 0 for non-matching ones
+        let mut f_lens = FilterCriteria::default();
+        f_lens.lens = Some("EF-M 22mm f/2".to_string());
+        let lens_facets = db.facets(&f_lens).unwrap();
+        assert_eq!(lens_facets.cameras.len(), 2);
+        let c_5d = lens_facets.cameras.iter().find(|c| c.name == "Canon EOS 5D Mark III").unwrap();
+        let c_eosm = lens_facets.cameras.iter().find(|c| c.name == "Canon EOS M").unwrap();
+        assert_eq!(c_5d.count, 0);
+        assert_eq!(c_eosm.count, 1);
+
         let _ = std::fs::remove_dir_all(&test_dir);
     }
 }

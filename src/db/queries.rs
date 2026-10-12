@@ -163,7 +163,7 @@ impl<'a> Queries<'a> {
                    v.date_recorded, v.imported_at, v.rating, v.flag, v.notes, v.color_label,
                    v.codec, v.has_audio, v.chunk_count, v.stretch_factor,
                    v.scene, v.shot, v.take, v.location, v.camera_unit,
-                   (SELECT GROUP_CONCAT(t.name, '\u001f') FROM video_tags vt JOIN tags t ON t.id = vt.tag_id WHERE vt.video_id = v.id) AS tags
+                   (SELECT GROUP_CONCAT(t.name, char(31)) FROM video_tags vt JOIN tags t ON t.id = vt.tag_id WHERE vt.video_id = v.id) AS tags
             FROM videos v
             WHERE 1=1
             "#,
@@ -272,7 +272,7 @@ impl<'a> Queries<'a> {
         rows.collect()
     }
 
-    pub fn facets(&self) -> Result<Facets> {
+    pub fn facets(&self, filter: &FilterCriteria) -> Result<Facets> {
         let mut f = Facets::default();
         self.conn.query_row(
             "SELECT COUNT(*), SUM(flag=1), SUM(flag=2), SUM(flag=0) FROM videos",
@@ -285,22 +285,127 @@ impl<'a> Queries<'a> {
                 Ok(())
             },
         )?;
-        let facet = |sql: &str| -> Result<Vec<Facet>> {
+
+        let build_where = |skip_cam: bool, skip_lens: bool, skip_tag: bool| -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
+            let mut clause = String::from("WHERE 1=1");
+            let mut p: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+            let search = filter.search_text.trim();
+            if !search.is_empty() {
+                p.push(Box::new(format!("%{search}%")));
+                let idx = p.len();
+                clause.push_str(&format!(
+                    " AND (v.file_name LIKE ?{idx} OR v.camera_name LIKE ?{idx} OR v.lens_name LIKE ?{idx} OR v.notes LIKE ?{idx} \
+                     OR v.scene LIKE ?{idx} OR v.location LIKE ?{idx} \
+                     OR v.id IN (SELECT vt.video_id FROM video_tags vt JOIN tags t ON t.id = vt.tag_id WHERE t.name LIKE ?{idx}))"
+                ));
+            }
+            if !skip_cam {
+                if let Some(cam) = &filter.camera {
+                    p.push(Box::new(cam.clone()));
+                    clause.push_str(&format!(" AND v.camera_name = ?{}", p.len()));
+                }
+            }
+            if !skip_lens {
+                if let Some(lens) = &filter.lens {
+                    p.push(Box::new(lens.clone()));
+                    clause.push_str(&format!(" AND v.lens_name = ?{}", p.len()));
+                }
+            }
+            if let Some(r) = filter.min_rating {
+                p.push(Box::new(r as i64));
+                clause.push_str(&format!(" AND v.rating >= ?{}", p.len()));
+            }
+            if let Some(fl) = filter.flag {
+                p.push(Box::new(fl as i64));
+                clause.push_str(&format!(" AND v.flag = ?{}", p.len()));
+            }
+            if !skip_tag {
+                if let Some(tag) = &filter.tag {
+                    p.push(Box::new(tag.clone()));
+                    clause.push_str(&format!(
+                        " AND v.id IN (
+                            WITH RECURSIVE tag_family(id) AS (
+                                SELECT id FROM tags WHERE name = ?{}
+                                UNION ALL
+                                SELECT t.id FROM tags t JOIN tag_family tf ON t.parent_id = tf.id
+                            )
+                            SELECT vt.video_id FROM video_tags vt WHERE vt.tag_id IN (SELECT id FROM tag_family)
+                        )",
+                        p.len()
+                    ));
+                }
+            }
+            (clause, p)
+        };
+
+        let query_counts = |sql: &str, params: &[Box<dyn rusqlite::ToSql>]| -> Result<std::collections::HashMap<String, usize>> {
             let mut stmt = self.conn.prepare(sql)?;
-            let rows = stmt.query_map([], |r| {
-                Ok(Facet {
-                    name: r.get(0)?,
-                    count: r.get::<_, i64>(1)? as usize,
-                })
-            })?;
+            let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+            let mut map = std::collections::HashMap::new();
+            let mut rows = stmt.query(refs.as_slice())?;
+            while let Some(r) = rows.next()? {
+                let name: String = r.get(0)?;
+                let count: i64 = r.get(1)?;
+                map.insert(name, count as usize);
+            }
+            Ok(map)
+        };
+
+        let query_all_names = |sql: &str| -> Result<Vec<String>> {
+            let mut stmt = self.conn.prepare(sql)?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
             rows.collect()
         };
-        f.cameras = facet("SELECT camera_name, COUNT(*) FROM videos GROUP BY camera_name ORDER BY camera_name")?;
-        f.lenses = facet("SELECT lens_name, COUNT(*) FROM videos GROUP BY lens_name ORDER BY lens_name")?;
-        f.tags = facet(
-            "SELECT t.name, COUNT(vt.video_id) FROM tags t JOIN video_tags vt ON vt.tag_id = t.id GROUP BY t.id ORDER BY t.name COLLATE NOCASE",
+
+        // 1. Cameras facet (all catalog cameras, with counts filtered by lens, tag, rating, flag, search)
+        let all_cameras = query_all_names("SELECT camera_name FROM videos GROUP BY camera_name ORDER BY camera_name")?;
+        let (cam_where, cam_params) = build_where(true, false, false);
+        let cam_counts = query_counts(
+            &format!("SELECT v.camera_name, COUNT(*) FROM videos v {cam_where} GROUP BY v.camera_name"),
+            &cam_params,
         )?;
-        f.tag_tree = self.get_tag_tree().unwrap_or_default();
+        f.cameras = all_cameras
+            .into_iter()
+            .map(|name| {
+                let count = cam_counts.get(&name).copied().unwrap_or(0);
+                Facet { name, count }
+            })
+            .collect();
+
+        // 2. Lenses facet (all catalog lenses, with counts filtered by camera, tag, rating, flag, search)
+        let all_lenses = query_all_names("SELECT lens_name FROM videos GROUP BY lens_name ORDER BY lens_name")?;
+        let (lens_where, lens_params) = build_where(false, true, false);
+        let lens_counts = query_counts(
+            &format!("SELECT v.lens_name, COUNT(*) FROM videos v {lens_where} GROUP BY v.lens_name"),
+            &lens_params,
+        )?;
+        f.lenses = all_lenses
+            .into_iter()
+            .map(|name| {
+                let count = lens_counts.get(&name).copied().unwrap_or(0);
+                Facet { name, count }
+            })
+            .collect();
+
+        // 3. Tags facet & tree (all catalog tags, with counts filtered by camera, lens, rating, flag, search)
+        let all_tags = query_all_names("SELECT name FROM tags ORDER BY name COLLATE NOCASE")?;
+        let (tag_where, tag_params) = build_where(false, false, true);
+        let tag_counts = query_counts(
+            &format!(
+                "SELECT t.name, COUNT(vt.video_id) FROM tags t JOIN video_tags vt ON vt.tag_id = t.id JOIN videos v ON v.id = vt.video_id {tag_where} GROUP BY t.id"
+            ),
+            &tag_params,
+        )?;
+        f.tags = all_tags
+            .into_iter()
+            .map(|name| {
+                let count = tag_counts.get(&name).copied().unwrap_or(0);
+                Facet { name, count }
+            })
+            .collect();
+        f.tag_tree = self.get_filtered_tag_tree(&tag_where, &tag_params).unwrap_or_default();
+        f.full_tag_tree = self.get_tag_tree().unwrap_or_default();
         Ok(f)
     }
 
@@ -506,6 +611,63 @@ impl<'a> Queries<'a> {
         }
 
         Ok(build_subtree(None, &children_map, &direct_counts))
+    }
+
+    /// Builds a hierarchical keyword tree filtered by the active video WHERE clause,
+    /// pruning any branches that have 0 matching videos.
+    pub fn get_filtered_tag_tree(
+        &self,
+        where_clause: &str,
+        params: &[Box<dyn rusqlite::ToSql>],
+    ) -> Result<Vec<TagNode>> {
+        let tags = self.get_all_tags()?;
+
+        let mut direct_counts: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+        {
+            let sql = format!(
+                "SELECT vt.tag_id, COUNT(vt.video_id) FROM video_tags vt JOIN videos v ON v.id = vt.video_id {where_clause} GROUP BY vt.tag_id"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+            let mut rows = stmt.query(refs.as_slice())?;
+            while let Some(row) = rows.next()? {
+                let tag_id: i64 = row.get(0)?;
+                let count: i64 = row.get(1)?;
+                direct_counts.insert(tag_id, count as usize);
+            }
+        }
+
+        let mut children_map: std::collections::HashMap<Option<i64>, Vec<TagRecord>> = std::collections::HashMap::new();
+        for t in tags {
+            children_map.entry(t.parent_id).or_default().push(t);
+        }
+
+        fn build_filtered_subtree(
+            parent_id: Option<i64>,
+            children_map: &std::collections::HashMap<Option<i64>, Vec<TagRecord>>,
+            direct_counts: &std::collections::HashMap<i64, usize>,
+        ) -> Vec<TagNode> {
+            let mut nodes = Vec::new();
+            if let Some(list) = children_map.get(&parent_id) {
+                for item in list {
+                    let direct = direct_counts.get(&item.id).copied().unwrap_or(0);
+                    let sub_children = build_filtered_subtree(Some(item.id), children_map, direct_counts);
+                    let sub_sum: usize = sub_children.iter().map(|c| c.total_count).sum();
+                    let total = direct + sub_sum;
+                    nodes.push(TagNode {
+                        id: item.id,
+                        name: item.name.clone(),
+                        parent_id: item.parent_id,
+                        direct_count: direct,
+                        total_count: total,
+                        children: sub_children,
+                    });
+                }
+            }
+            nodes
+        }
+
+        Ok(build_filtered_subtree(None, &children_map, &direct_counts))
     }
 
     pub fn backup_database_to_file<P: AsRef<Path>>(&self, dest_path: P) -> Result<()> {

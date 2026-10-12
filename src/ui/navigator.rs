@@ -160,7 +160,9 @@ impl Navigator {
         custom_icon_font: Option<FontId>,
     ) -> bool {
         let is_dark = ui.visuals().dark_mode;
-        let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
+        let is_disabled = count == 0 && !is_selected && label != "All Clips";
+        let sense = if is_disabled { Sense::hover() } else { Sense::click() };
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), sense);
         let painter = ui.painter();
 
         // Row background
@@ -168,13 +170,23 @@ impl Navigator {
             let bg_sel = if is_dark { ACCENT_DIM } else { ACCENT };
             painter.rect_filled(rect, Rounding::same(ROUNDING), bg_sel);
             painter.rect_stroke(rect, Rounding::same(ROUNDING), Stroke::new(1.0_f32, ACCENT));
-        } else if response.hovered() {
+        } else if !is_disabled && response.hovered() {
             painter.rect_filled(rect, Rounding::same(ROUNDING), bg_card_hover(ui));
         }
 
         // Left Icon + Label
-        let icon_col = glyph_color.unwrap_or(if is_selected { Color32::WHITE } else { text_secondary(ui) });
-        let text_col = if is_selected { Color32::WHITE } else { text_primary(ui) };
+        let icon_col = if is_disabled {
+            text_disabled(ui)
+        } else {
+            glyph_color.unwrap_or(if is_selected { Color32::WHITE } else { text_secondary(ui) })
+        };
+        let text_col = if is_disabled {
+            text_disabled(ui)
+        } else if is_selected {
+            Color32::WHITE
+        } else {
+            text_primary(ui)
+        };
         let text_y = rect.center().y;
 
         let icon_font = custom_icon_font.unwrap_or_else(|| FontId::proportional(13.0));
@@ -196,10 +208,18 @@ impl Navigator {
 
         let badge_bg = if is_selected {
             if is_dark { ACCENT.gamma_multiply(0.4) } else { Color32::from_white_alpha(50) }
+        } else if is_disabled {
+            bg_field(ui).gamma_multiply(0.45)
         } else {
             bg_field(ui)
         };
-        let badge_text_col = if is_selected { Color32::WHITE } else { text_muted(ui) };
+        let badge_text_col = if is_disabled {
+            text_disabled(ui)
+        } else if is_selected {
+            Color32::WHITE
+        } else {
+            text_muted(ui)
+        };
         painter.rect_filled(badge_rect, Rounding::same(8.0), badge_bg);
         painter.text(
             badge_rect.center(),
@@ -222,7 +242,7 @@ impl Navigator {
             text_col,
         );
 
-        response.clicked()
+        !is_disabled && response.clicked()
     }
 
     /// Renders a hierarchical keyword node like Lightroom:
@@ -239,13 +259,15 @@ impl Navigator {
         changed: &mut bool,
     ) -> bool {
         let is_sel = filter.tag.as_ref() == Some(&node.name);
+        let is_disabled = node.total_count == 0 && !is_sel;
         let id = ui.make_persistent_id(format!("kw_node_{}", node.id));
         let mut is_expanded = ui.data_mut(|d| d.get_temp::<bool>(id).unwrap_or(true));
         let is_dark = ui.visuals().dark_mode;
 
         let indent = depth as f32 * 14.0;
         let row_height = 24.0;
-        let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), Sense::click());
+        let sense = if is_disabled { Sense::hover() } else { Sense::click() };
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), sense);
         let painter = ui.painter();
 
         // Row background
@@ -253,7 +275,7 @@ impl Navigator {
             let bg_sel = if is_dark { ACCENT_DIM } else { ACCENT };
             painter.rect_filled(rect, Rounding::same(ROUNDING), bg_sel);
             painter.rect_stroke(rect, Rounding::same(ROUNDING), Stroke::new(1.0_f32, ACCENT));
-        } else if response.hovered() {
+        } else if !is_disabled && response.hovered() {
             painter.rect_filled(rect, Rounding::same(ROUNDING), bg_card_hover(ui));
         }
 
@@ -275,17 +297,35 @@ impl Navigator {
                 Align2::CENTER_CENTER,
                 caret_glyph,
                 FontId::proportional(11.0),
-                if caret_resp.hovered() { text_primary(ui) } else { text_muted(ui) },
+                if caret_resp.hovered() {
+                    text_primary(ui)
+                } else if is_disabled {
+                    text_disabled(ui)
+                } else {
+                    text_muted(ui)
+                },
             );
         } else {
             // Bullet or subtle dot
-            let dot_col = if is_sel { Color32::WHITE } else { text_muted(ui) };
+            let dot_col = if is_disabled {
+                text_disabled(ui)
+            } else if is_sel {
+                Color32::WHITE
+            } else {
+                text_muted(ui)
+            };
             painter.circle_filled(Pos2::new(cur_x + 6.0, center_y), 1.5, dot_col);
         }
         cur_x += 16.0;
 
         // Tag icon
-        let tag_col = if is_sel { Color32::WHITE } else { ACCENT };
+        let tag_col = if is_disabled {
+            text_disabled(ui)
+        } else if is_sel {
+            Color32::WHITE
+        } else {
+            ACCENT
+        };
         painter.text(
             Pos2::new(cur_x, center_y),
             Align2::LEFT_CENTER,
@@ -296,14 +336,13 @@ impl Navigator {
         cur_x += 16.0;
 
         // Right side: Count badge + Filter Arrow button
-        // Arrow button rect:
         let arrow_size = 18.0;
         let arrow_rect = Rect::from_center_size(
             Pos2::new(rect.max.x - arrow_size * 0.5 - 4.0, center_y),
             Vec2::new(arrow_size, arrow_size),
         );
-        let arrow_resp = ui.interact(arrow_rect, id.with("arrow_filter"), Sense::click());
-        let arrow_hovered = arrow_resp.hovered();
+        let arrow_resp = ui.interact(arrow_rect, id.with("arrow_filter"), sense);
+        let arrow_hovered = !is_disabled && arrow_resp.hovered();
 
         // Right Count Badge Pill
         let count_str = format!("{}", node.total_count);
@@ -315,10 +354,18 @@ impl Navigator {
 
         let badge_bg = if is_sel {
             if is_dark { ACCENT.gamma_multiply(0.4) } else { Color32::from_white_alpha(50) }
+        } else if is_disabled {
+            bg_field(ui).gamma_multiply(0.45)
         } else {
             bg_field(ui)
         };
-        let badge_text_col = if is_sel { Color32::WHITE } else { text_muted(ui) };
+        let badge_text_col = if is_disabled {
+            text_disabled(ui)
+        } else if is_sel {
+            Color32::WHITE
+        } else {
+            text_muted(ui)
+        };
         painter.rect_filled(badge_rect, Rounding::same(8.0), badge_bg);
         painter.text(
             badge_rect.center(),
@@ -329,7 +376,7 @@ impl Navigator {
         );
 
         // Arrow button on right (Lightroom style filter arrow)
-        if response.hovered() || is_sel || arrow_hovered {
+        if !is_disabled && (response.hovered() || is_sel || arrow_hovered) {
             let arrow_bg = if arrow_hovered { ACCENT } else { Color32::TRANSPARENT };
             painter.rect_filled(arrow_rect, Rounding::same(3.0), arrow_bg);
             painter.text(
@@ -341,12 +388,8 @@ impl Navigator {
             );
         }
 
-        // Clicking the arrow specifically sets/toggles filtering to this keyword
-        if arrow_resp.clicked() {
-            filter.tag = if is_sel { None } else { Some(node.name.clone()) };
-            *changed = true;
-        } else if response.clicked() {
-            // Clicking the row selects/filters the keyword
+        // Clicking the arrow or row sets/toggles filtering to this keyword
+        if !is_disabled && (arrow_resp.clicked() || response.clicked()) {
             filter.tag = if is_sel { None } else { Some(node.name.clone()) };
             *changed = true;
         }
@@ -355,12 +398,19 @@ impl Navigator {
         let max_label_w = (badge_rect.min.x - cur_x - 6.0).max(10.0);
         let font_id = FontId::proportional(FONT_BODY);
         let elided = widgets::elide(ui, &node.name, &font_id, max_label_w);
+        let label_col = if is_disabled {
+            text_disabled(ui)
+        } else if is_sel {
+            Color32::WHITE
+        } else {
+            text_primary(ui)
+        };
         painter.text(
             Pos2::new(cur_x, center_y),
             Align2::LEFT_CENTER,
             elided,
             font_id,
-            if is_sel { Color32::WHITE } else { text_primary(ui) },
+            label_col,
         );
 
         // Recursively render children if expanded
@@ -370,6 +420,6 @@ impl Navigator {
             }
         }
 
-        response.clicked() || arrow_resp.clicked()
+        !is_disabled && (response.clicked() || arrow_resp.clicked())
     }
 }
