@@ -1,16 +1,20 @@
 # MLV Explorer 🎬
 
-A high-performance photo catalog-style browser, player, and organizer for **Magic Lantern RAW Video (`.mlv`)** files, written in **Rust** with **egui/eframe** and **SQLite**.
+A photo catalog-style browser, player, and organizer for **Magic Lantern RAW Video (`.mlv`)** files, written in **Rust** with **egui/eframe** and **SQLite**.
 
-Designed for cinematographers and filmmakers who shoot with Magic Lantern on Canon DSLRs (5D Mark III, EOS M, 70D, 6D, 5D Mark II, etc.) and need an ultra-fast, responsive tool to ingest, organize, slate, review, and cull raw takes before sending selected clips into [MLV App](https://github.com/ilia3101/MLV-App) or DaVinci Resolve for final processing.
+Designed for people who shoot with Magic Lantern on Canon DSLRs/Mirrorless (5D Mark III, EOS M, 70D, 6D, 5D Mark II, etc.) and need an fast, responsive tool to ingest, organize, slate, review, and cull raw takes before sending selected clips into [MLV App](https://github.com/ilia3101/MLV-App) for final processing.
+
+This is a hobbie personal project and I won't have time to review PRs, if you want to improve on this. Feel free to fork the repo. My apologies in advance. Also note that this project is a work in progress and may be unstable at times.
 
 ---
 
 ## 🌟 Features
 
 ### 🖼️ Photo Browser-Style Catalog & Ingestion
+
 - **Contact Sheet Grid**: High-density thumbnail grid with smooth card scaling, aspect-ratio preservation, duration overlays, resolution badges, audio presence indicators, star ratings, and pick/reject flags.
-- **Rubberband Box Drag Selection**: Click and drag across the catalog canvas to marquee-select multiple clips at once with interactive bounding box visualization.
+- **Rubberband Box Drag Selection**: Click and drag across the catalog canvas to marquee-select multiple clips at once with interactive bounding box visualization (automatically excludes the scrollbar track).
+- **Date Scrubber Tooltip**: Dragging or hovering along the scrollbar displays a floating month & year indicator pill (similar to Google Photos / Apple Photos) for instant chronological navigation across extensive catalogs.
 - **Sequential & Modifier Selection**:
   - `Shift` + Click: Continuous range selection from the active clip to the clicked clip.
   - `Ctrl` / `Cmd` + Click: Toggle individual clips in and out of the active selection.
@@ -23,6 +27,7 @@ Designed for cinematographers and filmmakers who shoot with Magic Lantern on Can
 - **Non-Destructive SQLite Catalog**: Instant database-backed filtering and search. Includes live atomic database backups (`.db`) and portable JSON catalog export/import across multiple editing machines.
 
 ### 🎬 Cinema Production Slate & Batch Inspector
+
 - **Batch Editing Across Multiple Clips**: Selecting multiple clips lets you inspect and modify attributes in bulk:
   - **Star Ratings**: Set 1–5 stars or clear ratings for all selected takes.
   - **Pick / Reject Flags**: Flag multiple takes as Picked, Rejected, or Neutral in a single click.
@@ -33,6 +38,7 @@ Designed for cinematographers and filmmakers who shoot with Magic Lantern on Can
 - **Deep Hardware EXIF Extraction**: Reads camera model, camera serial number, lens name, focal length, aperture ($f$-stop), shutter speed, ISO, kelvin color temperature, frame rate, and raw bit depth.
 
 ### 🎥 Cinema Player & Audio Sync
+
 - **Synchronized Audio Playback Engine**: Linear PCM audio parsing (`WAVI` & `AUDF` blocks) with real-time synchronized audio output via `rodio`, timeline scrubbing, volume slider, mute toggle, and track info pills (`48 kHz / 16-bit stereo`).
 - **Cinema Fullscreen Experience**: Press **`F`** to toggle immersive borderless fullscreen video mode with auto-hiding transport HUD, or double-click anywhere on the video canvas.
 - **Aspect Ratio & Anamorphic De-squeeze**: Explicit format detection from `DISP`/`RAWC` blocks and manual overrides for standard (1:1), anamorphic (1.33x, 1.5x, 1.75x, 2.0x), and Magic Lantern 3x1 / 1x3 anamorphic crop modes.
@@ -40,6 +46,7 @@ Designed for cinematographers and filmmakers who shoot with Magic Lantern on Can
 - **One-Click Bridge to MLV App**: Dedicated **"Open in MLVApp"** action to instantly launch the current clip in [MLV App](https://github.com/ilia3101/MLV-App) for deep grading, raw export, and CinemaDNG/ProRes conversion.
 
 ### 💾 5D Mark III Dual-Card Spanning
+
 - Full support for multi-part spanned recordings created by high-bitrate dual-card recording (CompactFlash + SD card spanning).
 - Automatically discovers and stitches primary `.MLV` files with companion slices (`.M00`, `.M01`, `.M02`, etc.) across split directories seamlessly.
 
@@ -47,21 +54,21 @@ Designed for cinematographers and filmmakers who shoot with Magic Lantern on Can
 
 ## ⌨️ Keyboard Shortcuts
 
-| Shortcut | Context | Action |
-| :--- | :--- | :--- |
-| **`G`** | Global | Switch to Grid View (Contact Sheet) |
-| **`E`** | Global | Switch to Player / Loupe View |
-| **`F`** | Player View | Toggle Cinema Fullscreen Video mode |
-| **`Space`** | Player View | Play / Pause playback |
-| **`Left` / `Right`** | Player View | Step 1 frame backward / forward |
-| **`1` – `5`** | Grid / Player | Set Star Rating (1 to 5 stars) on selected clip(s) |
-| **`0`** | Grid / Player | Clear Star Rating on selected clip(s) |
-| **`P`** | Grid / Player | Flag selected clip(s) as **Picked** |
-| **`X`** | Grid / Player | Flag selected clip(s) as **Rejected** |
-| **`U`** | Grid / Player | **Unflag** / reset selected clip(s) to Neutral |
-| **`Ctrl` + `D`** / **`Cmd` + `D`** | Grid View | **Deselect All** clips |
-| **`Del` / `Backspace`** | Grid View | **Remove from Catalog** (with confirmation) |
-| **`Esc`** | Any | Exit Fullscreen / Return to Grid View |
+| Shortcut                           | Context       | Action                                             |
+| :--------------------------------- | :------------ | :------------------------------------------------- |
+| **`G`**                            | Global        | Switch to Grid View (Contact Sheet)                |
+| **`E`**                            | Global        | Switch to Player / Loupe View                      |
+| **`F`**                            | Player View   | Toggle Cinema Fullscreen Video mode                |
+| **`Space`**                        | Player View   | Play / Pause playback                              |
+| **`Left` / `Right`**               | Player View   | Step 1 frame backward / forward                    |
+| **`1` – `5`**                      | Grid / Player | Set Star Rating (1 to 5 stars) on selected clip(s) |
+| **`0`**                            | Grid / Player | Clear Star Rating on selected clip(s)              |
+| **`P`**                            | Grid / Player | Flag selected clip(s) as **Picked**                |
+| **`X`**                            | Grid / Player | Flag selected clip(s) as **Rejected**              |
+| **`U`**                            | Grid / Player | **Unflag** / reset selected clip(s) to Neutral     |
+| **`Ctrl` + `D`** / **`Cmd` + `D`** | Grid View     | **Deselect All** clips                             |
+| **`Del` / `Backspace`**            | Grid View     | **Remove from Catalog** (with confirmation)        |
+| **`Esc`**                          | Any           | Exit Fullscreen / Return to Grid View              |
 
 ---
 
@@ -70,7 +77,7 @@ Designed for cinematographers and filmmakers who shoot with Magic Lantern on Can
 ### Prerequisites
 
 - **Rust Toolchain**: Rust 1.75+ (install via [rustup.rs](https://rustup.rs/))
-- **C/C++ Build Tools**: 
+- **C/C++ Build Tools**:
   - **Windows**: Visual Studio C++ Build Tools or MinGW
   - **Linux**: `build-essential`, `libasound2-dev`, `libxcb-render0-dev`, `libxcb-shape0-dev`, `libxcb-xfixes0-dev`
   - **macOS**: Xcode Command Line Tools
@@ -91,6 +98,7 @@ cargo build --release
 ```
 
 The resulting executable will be located at:
+
 - **Windows**: `target/release/mlv-explorer.exe`
 - **Linux/macOS**: `target/release/mlv-explorer`
 

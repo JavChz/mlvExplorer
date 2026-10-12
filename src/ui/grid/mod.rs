@@ -34,6 +34,22 @@ fn format_day_info(date_str: Option<&str>) -> (String, String) {
     }
 }
 
+fn format_month_label(date_str: Option<&str>) -> String {
+    let Some(d) = date_str else {
+        return "Undated".to_string();
+    };
+    let clean = d.trim();
+    if clean.len() < 10 {
+        return "Undated".to_string();
+    }
+    let date_part = &clean[..10];
+    if let Ok(naive) = chrono::NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
+        naive.format("%B %Y").to_string()
+    } else {
+        date_part.to_string()
+    }
+}
+
 fn format_bytes(bytes: u64) -> String {
     if bytes >= 1024 * 1024 * 1024 {
         format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
@@ -269,10 +285,18 @@ impl GridView {
         let inner_rect = scroll_output.inner_rect;
         let pointer = ui.input(|i| i.pointer.clone());
 
+        // Reserve a right margin strip for the vertical scrollbar so dragging the scroll handle never triggers box select
+        let scrollbar_width = ui.spacing().scroll.bar_width.max(16.0);
+        let content_selectable_rect = Rect::from_min_max(
+            inner_rect.min,
+            Pos2::new((inner_rect.max.x - scrollbar_width).max(inner_rect.min.x), inner_rect.max.y),
+        );
+
         // Check if user pressed left mouse button
         if pointer.primary_pressed() {
             if let Some(press_pos) = pointer.press_origin() {
-                if inner_rect.contains(press_pos) {
+                // Must be strictly within selectable content area and not touching the scrollbar or a card
+                if content_selectable_rect.contains(press_pos) {
                     let hit_card = card_rects.iter().any(|(_, r)| r.contains(press_pos));
                     if !hit_card {
                         self.drag_start_pos = Some(press_pos);
@@ -334,6 +358,101 @@ impl GridView {
         if pointer.primary_released() {
             self.drag_start_pos = None;
             self.drag_current_pos = None;
+        }
+
+        // --- Date Scrubber Tooltip on Scrollbar ---
+        // Shows the current month/year floating tooltip next to the scroll handle (like Google Photos / Apple Photos)
+        let total_content_h = scroll_output.content_size.y;
+        let view_h = inner_rect.height();
+        if total_content_h > view_h && !videos.is_empty() {
+            let scrollbar_zone = Rect::from_min_max(
+                Pos2::new(inner_rect.max.x - scrollbar_width - 8.0, inner_rect.min.y),
+                Pos2::new(inner_rect.max.x + 4.0, inner_rect.max.y),
+            );
+
+            let pointer_pos = pointer.latest_pos();
+            let is_scrollbar_hovered = pointer_pos.map_or(false, |p| scrollbar_zone.contains(p));
+            let is_scrollbar_dragging = is_scrollbar_hovered && pointer.primary_down() && self.drag_start_pos.is_none();
+
+            if is_scrollbar_hovered || is_scrollbar_dragging {
+                // Determine the scroll fraction: if dragging or hovering over scrollbar, calculate from pointer Y; otherwise from current scroll offset
+                let scroll_fraction = if let Some(p) = pointer_pos {
+                    if is_scrollbar_dragging {
+                        ((p.y - inner_rect.min.y) / view_h).clamp(0.0, 1.0)
+                    } else {
+                        (scroll_output.state.offset.y / (total_content_h - view_h).max(1.0)).clamp(0.0, 1.0)
+                    }
+                } else {
+                    (scroll_output.state.offset.y / (total_content_h - view_h).max(1.0)).clamp(0.0, 1.0)
+                };
+
+                // Approximate video index corresponding to this scroll fraction
+                let approx_idx = ((scroll_fraction * (videos.len().saturating_sub(1) as f32)).round() as usize)
+                    .min(videos.len().saturating_sub(1));
+
+                let date_str = videos[approx_idx].date_recorded.as_deref();
+                let tooltip_text = format_month_label(date_str);
+
+                // Compute Y position for the bubble: follow the mouse Y if dragging, otherwise follow scrollbar handle position
+                let bubble_y = if let Some(p) = pointer_pos {
+                    if is_scrollbar_dragging {
+                        p.y.clamp(inner_rect.min.y + 18.0, inner_rect.max.y - 18.0)
+                    } else {
+                        (inner_rect.min.y + scroll_fraction * view_h).clamp(inner_rect.min.y + 18.0, inner_rect.max.y - 18.0)
+                    }
+                } else {
+                    (inner_rect.min.y + scroll_fraction * view_h).clamp(inner_rect.min.y + 18.0, inner_rect.max.y - 18.0)
+                };
+
+                let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Tooltip,
+                    egui::Id::new("scrollbar_date_scrubber_tooltip"),
+                ));
+
+                // Measure text
+                let font_id = egui::FontId::proportional(12.5);
+                let text_layout = painter.layout_no_wrap(
+                    tooltip_text,
+                    font_id,
+                    Color32::from_rgb(255, 255, 255),
+                );
+                let text_size = text_layout.size();
+
+                let padding_x = 10.0;
+                let padding_y = 6.0;
+                let bubble_w = text_size.x + padding_x * 2.0;
+                let bubble_h = text_size.y + padding_y * 2.0;
+
+                // Position bubble to the left of the scrollbar
+                let bubble_right = inner_rect.max.x - scrollbar_width - 10.0;
+                let bubble_rect = Rect::from_min_size(
+                    Pos2::new(bubble_right - bubble_w, bubble_y - bubble_h / 2.0),
+                    Vec2::new(bubble_w, bubble_h),
+                );
+
+                // Draw drop shadow
+                let shadow_rect = bubble_rect.translate(Vec2::new(0.0, 2.0));
+                painter.rect_filled(
+                    shadow_rect,
+                    Rounding::same(6.0),
+                    Color32::from_black_alpha(80),
+                );
+
+                // Draw pill background (glassmorphic dark pill with subtle border)
+                painter.rect(
+                    bubble_rect,
+                    Rounding::same(6.0),
+                    Color32::from_rgb(26, 28, 36),
+                    Stroke::new(1.0_f32, Color32::from_rgb(60, 66, 82)),
+                );
+
+                // Draw text
+                painter.galley(
+                    Pos2::new(bubble_rect.min.x + padding_x, bubble_rect.min.y + padding_y),
+                    text_layout,
+                    Color32::from_rgb(243, 244, 246),
+                );
+            }
         }
 
         action
