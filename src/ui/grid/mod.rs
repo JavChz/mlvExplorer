@@ -42,6 +42,24 @@ fn format_duration(secs: f32) -> String {
     format!("{:02}:{:02}", m, rem)
 }
 
+fn format_month_label(date_str: Option<&str>) -> String {
+    let Some(d) = date_str else {
+        return "Undated".to_string();
+    };
+    let clean = d.trim();
+    if clean.len() < 7 {
+        return "Undated".to_string();
+    }
+    let date_part = &clean[..10.min(clean.len())];
+    if let Ok(naive) = chrono::NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
+        naive.format("%B %Y").to_string()
+    } else if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(clean) {
+        dt.format("%B %Y").to_string()
+    } else {
+        date_part.to_string()
+    }
+}
+
 impl GridView {
     pub fn show(
         &mut self,
@@ -286,8 +304,9 @@ impl GridView {
         if pointer.primary_pressed() {
             if let Some(press_pos) = pointer.press_origin() {
                 if valid_selection_rect.contains(press_pos) {
+                    let hit_tooltip = self.scrollbar_tooltip_rect.map_or(false, |r| r.expand(6.0).contains(press_pos));
                     let hit_card = card_rects.iter().any(|(_, r)| r.contains(press_pos));
-                    if !hit_card {
+                    if !hit_card && !hit_tooltip {
                         self.drag_start_pos = Some(press_pos);
                         self.drag_current_pos = Some(press_pos);
                     }
@@ -347,6 +366,140 @@ impl GridView {
             self.drag_current_pos = None;
         }
 
+        // --- Date Scrubber Tooltip on Scrollbar ---
+        // Shows floating month/year badge next to the scroll handle when hovering or dragging scrollbar
+        let total_content_h = scroll_output.content_size.y;
+        let view_h = inner_rect.height();
+        if total_content_h > view_h && !videos.is_empty() {
+            let scrollbar_zone = Rect::from_min_max(
+                Pos2::new(inner_rect.max.x - scrollbar_gutter_w - 6.0, inner_rect.min.y),
+                Pos2::new(inner_rect.max.x + 8.0, inner_rect.max.y),
+            );
+
+            let pointer_pos = pointer.latest_pos();
+            let is_scrollbar_hovered = pointer_pos.map_or(false, |p| scrollbar_zone.contains(p));
+            let is_tooltip_hovered = pointer_pos.map_or(false, |p| {
+                self.scrollbar_tooltip_rect.map_or(false, |r| r.expand(4.0).contains(p))
+            });
+            let is_scrollbar_dragging = pointer.primary_down()
+                && self.drag_start_pos.is_none()
+                && (pointer.press_origin().map_or(false, |p| {
+                    scrollbar_zone.contains(p)
+                        || self.scrollbar_tooltip_rect.map_or(false, |r| r.expand(4.0).contains(p))
+                }));
+
+            if is_scrollbar_hovered || is_tooltip_hovered || is_scrollbar_dragging {
+                let scroll_fraction = if is_scrollbar_dragging || is_scrollbar_hovered {
+                    if let Some(p) = pointer_pos {
+                        ((p.y - inner_rect.min.y) / view_h.max(1.0)).clamp(0.0, 1.0)
+                    } else {
+                        (scroll_output.state.offset.y / (total_content_h - view_h).max(1.0)).clamp(0.0, 1.0)
+                    }
+                } else {
+                    (scroll_output.state.offset.y / (total_content_h - view_h).max(1.0)).clamp(0.0, 1.0)
+                };
+
+                let approx_idx = ((scroll_fraction * (videos.len().saturating_sub(1) as f32)).round() as usize)
+                    .min(videos.len().saturating_sub(1));
+
+                let mut date_str = videos[approx_idx].date_recorded.as_deref();
+                if date_str.is_none() {
+                    for offset in 1..=5 {
+                        if approx_idx >= offset && videos[approx_idx - offset].date_recorded.is_some() {
+                            date_str = videos[approx_idx - offset].date_recorded.as_deref();
+                            break;
+                        }
+                        if approx_idx + offset < videos.len() && videos[approx_idx + offset].date_recorded.is_some() {
+                            date_str = videos[approx_idx + offset].date_recorded.as_deref();
+                            break;
+                        }
+                    }
+                }
+
+                let tooltip_text = format_month_label(date_str);
+
+                let bubble_y = if let Some(p) = pointer_pos {
+                    if is_scrollbar_dragging || is_scrollbar_hovered {
+                        p.y.clamp(inner_rect.min.y + 18.0, inner_rect.max.y - 18.0)
+                    } else {
+                        (inner_rect.min.y + scroll_fraction * view_h).clamp(inner_rect.min.y + 18.0, inner_rect.max.y - 18.0)
+                    }
+                } else {
+                    (inner_rect.min.y + scroll_fraction * view_h).clamp(inner_rect.min.y + 18.0, inner_rect.max.y - 18.0)
+                };
+
+                let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Tooltip,
+                    egui::Id::new("scrollbar_date_scrubber_tooltip"),
+                ));
+
+                let display_str = format!("{}  {}", icon::CALENDAR, tooltip_text);
+                let font_id = egui::FontId::proportional(FONT_SMALL);
+                let text_layout = painter.layout_no_wrap(
+                    display_str,
+                    font_id,
+                    TEXT_PRIMARY,
+                );
+                let text_size = text_layout.size();
+
+                let padding_x = 10.0;
+                let padding_y = 6.0;
+                let bubble_w = text_size.x + padding_x * 2.0;
+                let bubble_h = text_size.y + padding_y * 2.0;
+
+                let bubble_right = inner_rect.max.x - scrollbar_gutter_w - 8.0;
+                let bubble_rect = Rect::from_min_size(
+                    Pos2::new(bubble_right - bubble_w, bubble_y - bubble_h / 2.0),
+                    Vec2::new(bubble_w, bubble_h),
+                );
+
+                self.scrollbar_tooltip_rect = Some(bubble_rect);
+
+                // Drop shadow
+                painter.rect_filled(
+                    bubble_rect.translate(Vec2::new(0.0, 2.0)),
+                    Rounding::same(ROUNDING),
+                    Color32::from_black_alpha(100),
+                );
+
+                // Pill container background
+                painter.rect(
+                    bubble_rect,
+                    Rounding::same(ROUNDING),
+                    BG_PANEL,
+                    Stroke::new(1.0_f32, BORDER_STRONG),
+                );
+
+                // Text with calendar icon
+                painter.galley(
+                    Pos2::new(bubble_rect.min.x + padding_x, bubble_rect.min.y + padding_y),
+                    text_layout,
+                    TEXT_PRIMARY,
+                );
+
+                ui.ctx().request_repaint();
+            } else {
+                self.scrollbar_tooltip_rect = None;
+            }
+        } else {
+            self.scrollbar_tooltip_rect = None;
+        }
+
         action
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_month_label() {
+        assert_eq!(format_month_label(Some("2024-06-15 14:30:00")), "June 2024");
+        assert_eq!(format_month_label(Some("2026-10-11")), "October 2026");
+        assert_eq!(format_month_label(Some("2023-01-01T12:00:00Z")), "January 2023");
+        assert_eq!(format_month_label(None), "Undated");
+        assert_eq!(format_month_label(Some("")), "Undated");
+    }
+}
+

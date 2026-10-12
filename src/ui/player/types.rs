@@ -35,6 +35,8 @@ pub struct PlayerView {
     pub is_muted: bool,
     pub last_frame_time: Instant,
     pub last_shown_frame: Option<Arc<crate::mlv::DecodedFrame>>,
+    pub last_pointer_pos: Option<egui::Pos2>,
+    pub last_interaction_time: Instant,
 }
 
 impl Default for PlayerView {
@@ -55,6 +57,8 @@ impl Default for PlayerView {
             is_muted: false,
             last_frame_time: Instant::now(),
             last_shown_frame: None,
+            last_pointer_pos: None,
+            last_interaction_time: Instant::now(),
         }
     }
 }

@@ -4,6 +4,8 @@ pub enum InspectorAction {
     BatchSetFlag(crate::db::PickFlag),
     BatchAddTag(String),
     BatchRemoveTag(String),
+    CreateKeywordWithParent { name: String, parent_id: Option<i64> },
+    FilterByTag(String),
     BatchSetNotes(String),
     BatchSetSlate {
         scene: Option<String>,
@@ -17,12 +19,14 @@ pub enum InspectorAction {
 
 pub struct Inspector {
     pub new_tag_input: String,
+    pub new_tag_parent_id: Option<i64>,
 }
 
 impl Default for Inspector {
     fn default() -> Self {
         Self {
             new_tag_input: String::new(),
+            new_tag_parent_id: None,
         }
     }
 }

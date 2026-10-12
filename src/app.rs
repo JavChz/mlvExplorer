@@ -43,6 +43,7 @@ pub struct MlvExplorerApp {
     import_tx: crossbeam_channel::Sender<ImportMessage>,
     import_rx: crossbeam_channel::Receiver<ImportMessage>,
     import_progress: Option<ImportProgress>,
+    import_cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 
     // Status bar & notification
     gpu_info: String,
@@ -97,6 +98,7 @@ impl MlvExplorerApp {
             import_tx,
             import_rx,
             import_progress: None,
+            import_cancel_flag: None,
             gpu_info,
             status_bar_text: "Ready. Drag and drop .MLV files or folders to import.".to_string(),
         };
@@ -146,6 +148,14 @@ impl MlvExplorerApp {
             }
         }
 
+        self.refresh_facets();
+
+        // Keep playback in sync with selected video
+        self.sync_playback();
+    }
+
+    /// Refresh camera/lens facets and keyword tag list from database
+    pub fn refresh_facets(&mut self) {
         if let Ok(facets) = self.db.facets() {
             self.cameras = facets.cameras.iter().map(|c| c.name.clone()).collect();
             self.lenses = facets.lenses.iter().map(|l| l.name.clone()).collect();
@@ -155,9 +165,6 @@ impl MlvExplorerApp {
         if let Ok(tags) = self.db.all_tag_names() {
             self.all_tags = tags;
         }
-
-        // Keep playback in sync with selected video
-        self.sync_playback();
     }
 
     /// Synchronize active video playback engine with the selected video
@@ -192,6 +199,10 @@ impl MlvExplorerApp {
             match FrameSource::open(&vid.file_path) {
                 Ok(source) => {
                     let pb = Playback::new(source, ctx.clone());
+                    if let Ok(mut a) = pb.audio.lock() {
+                        a.set_muted(self.player_view.is_muted);
+                        a.set_volume(self.player_view.volume);
+                    }
                     self.current_playback = Some((vid.id, pb));
                     self.player_view.current_frame = 0;
                     true
@@ -224,10 +235,14 @@ impl MlvExplorerApp {
             failed: 0,
         });
 
+        let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.import_cancel_flag = Some(cancel_flag.clone());
+
         Importer::start(
             files,
             self.db.path.clone(),
             self.import_tx.clone(),
+            cancel_flag,
             ctx.clone(),
         );
     }
@@ -522,12 +537,23 @@ impl eframe::App for MlvExplorerApp {
                 }
                 ImportMessage::Complete { total: _, imported, duplicates, failed } => {
                     self.import_progress = None;
+                    self.import_cancel_flag = None;
                     let mut summary = format!("Import complete: {} added", imported);
                     if duplicates > 0 {
                         summary.push_str(&format!(", {} duplicates skipped", duplicates));
                     }
                     if failed > 0 {
                         summary.push_str(&format!(", {} failed", failed));
+                    }
+                    self.status_bar_text = summary;
+                    self.reload_catalog();
+                }
+                ImportMessage::Cancelled { total: _, imported, duplicates, failed: _ } => {
+                    self.import_progress = None;
+                    self.import_cancel_flag = None;
+                    let mut summary = format!("Import cancelled: {} added", imported);
+                    if duplicates > 0 {
+                        summary.push_str(&format!(", {} duplicates skipped", duplicates));
                     }
                     self.status_bar_text = summary;
                     self.reload_catalog();
@@ -625,6 +651,16 @@ impl eframe::App for MlvExplorerApp {
                                     .size(FONT_CAPTION)
                                     .color(TEXT_MUTED),
                             );
+
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let cancel_label = format!("{} Cancel", widgets::icon::X);
+                                if ui.add(egui::Button::new(RichText::new(cancel_label).size(FONT_SMALL).color(FLAG_REJECTED))).clicked() {
+                                    if let Some(flag) = &self.import_cancel_flag {
+                                        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    }
+                                    self.status_bar_text = "Cancelling import...".to_string();
+                                }
+                            });
                         });
                     });
             }
@@ -693,7 +729,7 @@ impl eframe::App for MlvExplorerApp {
                     };
                     let selected_count = sel_indices.len();
                     let mut sel_vid = self.selected_video_idx.and_then(|idx| self.videos.get_mut(idx));
-                    if let Some(act) = self.inspector.show(ui, sel_vid.as_deref_mut(), selected_count, &self.db, &self.all_tags) {
+                    if let Some(act) = self.inspector.show(ui, sel_vid.as_deref_mut(), selected_count, &self.db, &self.facets) {
                         match act {
                             crate::ui::inspector::InspectorAction::OpenInMlvApp => {
                                 if let Some(idx) = self.selected_video_idx {
@@ -710,6 +746,10 @@ impl eframe::App for MlvExplorerApp {
                                         let _ = self.db.set_rating(vid.id, rating);
                                     }
                                 }
+                                self.refresh_facets();
+                                if self.filter.min_rating.is_some() {
+                                    self.reload_catalog();
+                                }
                             }
                             crate::ui::inspector::InspectorAction::BatchSetFlag(flag) => {
                                 for &idx in &sel_indices {
@@ -717,6 +757,10 @@ impl eframe::App for MlvExplorerApp {
                                         vid.flag = flag;
                                         let _ = self.db.set_flag(vid.id, flag);
                                     }
+                                }
+                                self.refresh_facets();
+                                if self.filter.flag.is_some() {
+                                    self.reload_catalog();
                                 }
                             }
                             crate::ui::inspector::InspectorAction::BatchAddTag(tag) => {
@@ -728,8 +772,9 @@ impl eframe::App for MlvExplorerApp {
                                         }
                                     }
                                 }
-                                if !self.all_tags.contains(&tag) {
-                                    self.all_tags.push(tag);
+                                self.refresh_facets();
+                                if self.filter.tag.is_some() {
+                                    self.reload_catalog();
                                 }
                             }
                             crate::ui::inspector::InspectorAction::BatchRemoveTag(tag) => {
@@ -739,6 +784,22 @@ impl eframe::App for MlvExplorerApp {
                                         let _ = self.db.remove_tag(vid.id, &tag);
                                     }
                                 }
+                                self.refresh_facets();
+                                if self.filter.tag.is_some() {
+                                    self.reload_catalog();
+                                }
+                            }
+                            crate::ui::inspector::InspectorAction::CreateKeywordWithParent { name, parent_id } => {
+                                let _ = self.db.create_tag(&name, parent_id);
+                                self.refresh_facets();
+                            }
+                            crate::ui::inspector::InspectorAction::FilterByTag(tag) => {
+                                self.filter.tag = if self.filter.tag.as_ref() == Some(&tag) {
+                                    None
+                                } else {
+                                    Some(tag)
+                                };
+                                self.reload_catalog();
                             }
                             crate::ui::inspector::InspectorAction::BatchSetNotes(notes) => {
                                 for &idx in &sel_indices {

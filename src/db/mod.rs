@@ -126,6 +126,21 @@ impl Database {
     }
 
     #[inline]
+    pub fn create_tag(&self, name: &str, parent_id: Option<i64>) -> Result<i64> {
+        self.queries().create_tag(name, parent_id)
+    }
+
+    #[inline]
+    pub fn set_tag_parent(&self, tag_id: i64, parent_id: Option<i64>) -> Result<()> {
+        self.queries().set_tag_parent(tag_id, parent_id)
+    }
+
+    #[inline]
+    pub fn delete_keyword(&self, tag_name: &str) -> Result<()> {
+        self.queries().delete_keyword(tag_name)
+    }
+
+    #[inline]
     pub fn remove_tag(&self, video_id: i64, tag_name: &str) -> Result<()> {
         self.queries().remove_tag(video_id, tag_name)
     }
@@ -133,6 +148,11 @@ impl Database {
     #[inline]
     pub fn all_tag_names(&self) -> Result<Vec<String>> {
         self.queries().all_tag_names()
+    }
+
+    #[inline]
+    pub fn get_tag_tree(&self) -> Result<Vec<TagNode>> {
+        self.queries().get_tag_tree()
     }
 
     #[inline]
@@ -255,6 +275,66 @@ mod tests {
         assert_eq!(videos[0].rating, 4);
         assert_eq!(videos[0].notes, "Sunny morning test");
         assert!(videos[0].tags.contains(&"B-Roll".to_string()));
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn test_keyword_hierarchy_and_filtering() {
+        let unique_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let test_dir = std::env::temp_dir().join(format!("mlv_tag_test_{unique_id}"));
+        std::fs::create_dir_all(&test_dir).unwrap();
+
+        let db_path = test_dir.join("test_tags.db");
+        let db = Database::open(&db_path).unwrap();
+
+        // Create hierarchy: Location -> Europe -> France
+        let loc_id = db.create_tag("Location", None).unwrap();
+        let eur_id = db.create_tag("Europe", Some(loc_id)).unwrap();
+        let _fra_id = db.create_tag("France", Some(eur_id)).unwrap();
+
+        let mut meta = MlvMetadata::default();
+        meta.file_path = "C:/test/clip_france.MLV".to_string();
+        meta.width = 1920;
+        meta.height = 1080;
+        meta.fps_num = 24000;
+        meta.fps_den = 1000;
+        meta.frame_count = 50;
+
+        let row_id = db.upsert_video(&meta).unwrap();
+        // Assign the leaf child tag "France" to the video
+        db.add_tag(row_id, "France").unwrap();
+
+        // 1. Verify tree structure
+        let tree = db.get_tag_tree().unwrap();
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].name, "Location");
+        assert_eq!(tree[0].total_count, 1); // Aggregated from grandchild
+        assert_eq!(tree[0].children.len(), 1);
+        assert_eq!(tree[0].children[0].name, "Europe");
+        assert_eq!(tree[0].children[0].total_count, 1);
+        assert_eq!(tree[0].children[0].children[0].name, "France");
+        assert_eq!(tree[0].children[0].children[0].direct_count, 1);
+
+        // 2. Verify filtering by Ancestor ("Location") finds the video tagged with "France"
+        let mut filter = FilterCriteria::default();
+        filter.tag = Some("Location".to_string());
+        let res_ancestor = db.get_videos(&filter).unwrap();
+        assert_eq!(res_ancestor.len(), 1, "Filtering by Location should match clips tagged with France");
+
+        // 3. Verify filtering by intermediate Parent ("Europe") finds the video
+        filter.tag = Some("Europe".to_string());
+        let res_parent = db.get_videos(&filter).unwrap();
+        assert_eq!(res_parent.len(), 1, "Filtering by Europe should match clips tagged with France");
+
+        // 4. Verify filtering by direct Tag ("France")
+        filter.tag = Some("France".to_string());
+        let res_leaf = db.get_videos(&filter).unwrap();
+        assert_eq!(res_leaf.len(), 1);
 
         // Clean up
         let _ = std::fs::remove_dir_all(&test_dir);

@@ -130,15 +130,15 @@ impl TagsSection {
         ui: &mut Ui,
         vid: &mut VideoRecord,
         db: &Database,
-        all_tags: &[String],
-        new_tag_input: &mut String,
+        facets: &crate::db::Facets,
+        inspector: &mut super::types::Inspector,
     ) -> Option<InspectorAction> {
         let mut action = None;
         let trailing = (!vid.tags.is_empty())
             .then(|| RichText::new(vid.tags.len().to_string()).size(FONT_CAPTION).color(TEXT_MUTED).into());
 
         widgets::section(ui, "Keywords", true, trailing, |ui| {
-            // Existing keywords
+            // 1. Existing keywords as removable chips on the active clip
             if !vid.tags.is_empty() {
                 let mut to_remove = None;
                 ui.horizontal_wrapped(|ui| {
@@ -154,63 +154,192 @@ impl TagsSection {
                     let _ = db.remove_tag(vid.id, &tag_name);
                     action = Some(InspectorAction::BatchRemoveTag(tag_name));
                 }
-                ui.add_space(6.0);
+                ui.add_space(8.0);
             }
 
-            // Add keyword input (Enter to commit)
-            let mut commit = false;
+            // 2. Add new keyword with optional Parent selector (Hierarchy)
+            let all_tag_records = db.get_all_tags().unwrap_or_default();
             ui.horizontal(|ui| {
                 let add_w = CONTROL_HEIGHT + 2.0;
                 let resp = ui.add_sized(
                     [ui.available_width() - add_w - ui.spacing().item_spacing.x, CONTROL_HEIGHT],
-                    egui::TextEdit::singleline(new_tag_input)
-                        .hint_text(widgets::hint("Add keyword…"))
+                    egui::TextEdit::singleline(&mut inspector.new_tag_input)
+                        .hint_text(widgets::hint("New keyword…"))
                         .margin(egui::vec2(6.0, 3.0)),
                 );
-                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+
+                let is_enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let mut commit = false;
+                if (resp.lost_focus() || resp.has_focus()) && is_enter {
                     commit = true;
                     resp.request_focus();
                 }
-                let can_add = !new_tag_input.trim().is_empty();
+
+                let can_add = !inspector.new_tag_input.trim().is_empty();
                 ui.add_enabled_ui(can_add, |ui| {
-                    if widgets::icon_button(ui, icon::PLUS, false, "Add keyword [Enter]").clicked() {
+                    if widgets::icon_button(ui, icon::PLUS, false, "Create keyword [Enter]").clicked() {
                         commit = true;
                     }
                 });
-            });
-            if commit && !new_tag_input.trim().is_empty() {
-                let tag = new_tag_input.trim().to_string();
-                if !vid.tags.contains(&tag) {
-                    vid.tags.push(tag.clone());
-                    let _ = db.add_tag(vid.id, &tag);
-                    action = Some(InspectorAction::BatchAddTag(tag));
-                }
-                new_tag_input.clear();
-            }
 
-            // Recently used keywords (quick add)
-            let unused: Vec<&String> = all_tags.iter().filter(|t| !vid.tags.contains(t)).take(8).collect();
-            if !unused.is_empty() {
-                ui.add_space(6.0);
-                ui.label(RichText::new("Recent").size(FONT_CAPTION).color(TEXT_MUTED));
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
-                    for t in unused {
-                        let b = egui::Button::new(
-                            RichText::new(format!("{} {}", icon::PLUS, t)).size(FONT_SMALL).color(TEXT_SECONDARY),
-                        )
-                        .fill(egui::Color32::TRANSPARENT)
-                        .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
-                        .rounding(egui::Rounding::same(10.0));
-                        if ui.add(b).clicked() {
-                            vid.tags.push(t.clone());
-                            let _ = db.add_tag(vid.id, t);
-                            action = Some(InspectorAction::BatchAddTag(t.clone()));
-                        }
+                if commit && !inspector.new_tag_input.trim().is_empty() {
+                    let tag_name = inspector.new_tag_input.trim().to_string();
+                    let parent_id = inspector.new_tag_parent_id;
+                    let _ = db.create_tag(&tag_name, parent_id);
+                    if !vid.tags.contains(&tag_name) {
+                        vid.tags.push(tag_name.clone());
+                        let _ = db.add_tag(vid.id, &tag_name);
+                        action = Some(InspectorAction::BatchAddTag(tag_name.clone()));
                     }
+                    inspector.new_tag_input.clear();
+                    inspector.new_tag_parent_id = None;
+                }
+            });
+
+            // Parent keyword dropdown selector for new keyword
+            if !all_tag_records.is_empty() {
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Parent:").size(FONT_CAPTION).color(TEXT_MUTED));
+                    let current_parent_name = inspector
+                        .new_tag_parent_id
+                        .and_then(|pid| all_tag_records.iter().find(|t| t.id == pid).map(|t| t.name.as_str()))
+                        .unwrap_or("None (Top Level)");
+
+                    egui::ComboBox::from_id_salt("inspector_keyword_parent_select")
+                        .selected_text(RichText::new(current_parent_name).size(FONT_CAPTION))
+                        .width(ui.available_width() - 8.0)
+                        .show_ui(ui, |ui| {
+                            if ui.selectable_label(inspector.new_tag_parent_id.is_none(), "None (Top Level)").clicked() {
+                                inspector.new_tag_parent_id = None;
+                            }
+                            for tag_rec in &all_tag_records {
+                                let is_active = inspector.new_tag_parent_id == Some(tag_rec.id);
+                                if ui.selectable_label(is_active, &tag_rec.name).clicked() {
+                                    inspector.new_tag_parent_id = Some(tag_rec.id);
+                                }
+                            }
+                        });
                 });
             }
+
+            ui.add_space(8.0);
+            widgets::toolbar_divider(ui);
+            ui.add_space(4.0);
+
+            // 3. Complete Keyword List with Checkboxes (Apply to clip) and Filter Arrow
+            ui.label(RichText::new("ALL KEYWORDS (Check to assign)").size(FONT_CAPTION).color(TEXT_MUTED).strong());
+            ui.add_space(2.0);
+
+            if facets.tag_tree.is_empty() {
+                ui.label(RichText::new("No keywords in catalog yet.").size(FONT_SMALL).color(TEXT_HINT));
+            } else {
+                for node in &facets.tag_tree {
+                    if let Some(act) = Self::render_inspector_keyword_node(ui, node, vid, db, 0) {
+                        action = Some(act);
+                    }
+                }
+            }
         });
+        action
+    }
+
+    /// Renders a hierarchical keyword item inside the Inspector with:
+    /// - Indentation based on tree depth
+    /// - Checkbox toggle (adds / removes keyword on active selection)
+    /// - Keyword name label
+    /// - Right-side arrow button (quickly filter catalog by this keyword)
+    fn render_inspector_keyword_node(
+        ui: &mut Ui,
+        node: &crate::db::TagNode,
+        vid: &mut VideoRecord,
+        db: &Database,
+        depth: usize,
+    ) -> Option<InspectorAction> {
+        let mut action = None;
+        let id = ui.make_persistent_id(format!("insp_kw_{}", node.id));
+        let mut is_expanded = ui.data_mut(|d| d.get_temp::<bool>(id).unwrap_or(true));
+
+        let has_children = !node.children.is_empty();
+        let indent = depth as f32 * 14.0;
+        let mut is_checked = vid.tags.contains(&node.name);
+
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            if indent > 0.0 {
+                ui.add_space(indent);
+            }
+
+            // Expand / Collapse Caret
+            if has_children {
+                let caret = if is_expanded { icon::CARET_DOWN } else { icon::CARET_RIGHT };
+                if ui.add(egui::Label::new(RichText::new(caret).size(11.0).color(TEXT_MUTED)).sense(Sense::click())).clicked() {
+                    is_expanded = !is_expanded;
+                    ui.data_mut(|d| d.insert_temp(id, is_expanded));
+                }
+            } else {
+                ui.add_space(10.0);
+            }
+
+            // Checkbox to toggle keyword on active clip
+            let cb_resp = ui.checkbox(&mut is_checked, "");
+            if cb_resp.changed() {
+                if is_checked {
+                    if !vid.tags.contains(&node.name) {
+                        vid.tags.push(node.name.clone());
+                        let _ = db.add_tag(vid.id, &node.name);
+                        action = Some(InspectorAction::BatchAddTag(node.name.clone()));
+                    }
+                } else {
+                    vid.tags.retain(|t| t != &node.name);
+                    let _ = db.remove_tag(vid.id, &node.name);
+                    action = Some(InspectorAction::BatchRemoveTag(node.name.clone()));
+                }
+            }
+
+            // Keyword name label
+            let text_color = if is_checked { TEXT_PRIMARY } else { TEXT_SECONDARY };
+            let lbl_resp = ui.add(egui::Label::new(RichText::new(&node.name).size(FONT_BODY).color(text_color)).sense(Sense::click()));
+            if lbl_resp.clicked() {
+                // Clicking label also toggles the checkbox
+                if !is_checked {
+                    vid.tags.push(node.name.clone());
+                    let _ = db.add_tag(vid.id, &node.name);
+                    action = Some(InspectorAction::BatchAddTag(node.name.clone()));
+                } else {
+                    vid.tags.retain(|t| t != &node.name);
+                    let _ = db.remove_tag(vid.id, &node.name);
+                    action = Some(InspectorAction::BatchRemoveTag(node.name.clone()));
+                }
+            }
+
+            // Right-aligned Filter Arrow Button (Lightroom style filter arrow)
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let filter_btn = ui.add(
+                    egui::Button::new(RichText::new(icon::ARROW_RIGHT).size(12.0).color(TEXT_MUTED))
+                        .fill(egui::Color32::TRANSPARENT)
+                        .stroke(Stroke::NONE),
+                )
+                .on_hover_text(format!("Filter catalog by keyword '{}'", node.name));
+
+                if filter_btn.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if filter_btn.clicked() {
+                    action = Some(InspectorAction::FilterByTag(node.name.clone()));
+                }
+            });
+        });
+
+        // Recursively render child keywords if expanded
+        if has_children && is_expanded {
+            for child in &node.children {
+                if let Some(sub_act) = Self::render_inspector_keyword_node(ui, child, vid, db, depth + 1) {
+                    action = Some(sub_act);
+                }
+            }
+        }
+
         action
     }
 }

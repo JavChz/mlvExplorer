@@ -18,7 +18,7 @@ impl Inspector {
         video: Option<&mut VideoRecord>,
         selected_count: usize,
         db: &Database,
-        all_tags: &[String],
+        facets: &crate::db::Facets,
     ) -> Option<InspectorAction> {
         let mut action = None;
 
@@ -86,7 +86,7 @@ impl Inspector {
                 if let Some(a) = ProductionSlateSection::show(ui, vid, db) {
                     action = Some(a);
                 }
-                if let Some(a) = TagsSection::show(ui, vid, db, all_tags, &mut self.new_tag_input) {
+                if let Some(a) = TagsSection::show(ui, vid, db, facets, self) {
                     action = Some(a);
                 }
                 if let Some(a) = NotesSection::show(ui, vid, db) {

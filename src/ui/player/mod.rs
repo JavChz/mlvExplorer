@@ -1,10 +1,12 @@
 pub mod canvas;
 pub mod header;
+pub mod overlay;
 pub mod transport;
 pub mod types;
 
 pub use canvas::Canvas;
 pub use header::HeaderBar;
+pub use overlay::FullscreenOverlay;
 pub use transport::TransportBar;
 pub use types::{PlayerAction, PlayerView, ZoomMode};
 
@@ -28,18 +30,32 @@ impl PlayerView {
 
         let editing_text = ui.ctx().wants_keyboard_input();
 
+        // Mouse motion & interaction tracking for fullscreen HUD auto-fade
+        let current_pointer_pos = ui.input(|i| i.pointer.hover_pos());
+        let mouse_moved = match (current_pointer_pos, self.last_pointer_pos) {
+            (Some(cur), Some(last)) => (cur - last).length_sq() > 4.0,
+            (Some(_), None) => true,
+            _ => false,
+        };
+        let any_mouse_down = ui.input(|i| i.pointer.any_down() || i.pointer.any_pressed());
+        if mouse_moved || any_mouse_down {
+            self.last_pointer_pos = current_pointer_pos;
+            self.last_interaction_time = Instant::now();
+        }
+
         // Global hotkeys in Player mode
         if !editing_text && ui.input(|i| i.key_pressed(egui::Key::F)) {
             self.is_fullscreen = !self.is_fullscreen;
             if self.is_fullscreen {
-                self.show_overlay_controls = false;
                 self.zoom_mode = ZoomMode::Fit;
                 self.pan_offset = egui::Vec2::ZERO;
             }
+            self.last_interaction_time = Instant::now();
             action = Some(PlayerAction::ToggleFullscreen);
         }
         if self.is_fullscreen && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.is_fullscreen = false;
+            self.last_interaction_time = Instant::now();
             action = Some(PlayerAction::ToggleFullscreen);
         } else if !self.is_fullscreen && (ui.input(|i| i.key_pressed(egui::Key::Escape)) || (!editing_text && ui.input(|i| i.key_pressed(egui::Key::G)))) {
             action = Some(PlayerAction::BackToGrid);
@@ -58,17 +74,24 @@ impl PlayerView {
                 }
             }
         }
+        let jump_1s = (video.fps.round() as usize).max(1);
+        let shift_down = ui.input(|i| i.modifiers.shift);
+
         if !editing_text && ui.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
-            if self.current_frame > 0 {
+            if shift_down {
+                self.current_frame = self.current_frame.saturating_sub(jump_1s);
+            } else if self.current_frame > 0 {
                 self.current_frame -= 1;
-                action = Some(PlayerAction::Seek(self.current_frame));
             }
+            action = Some(PlayerAction::Seek(self.current_frame));
         }
         if !editing_text && ui.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
-            if self.current_frame + 1 < total_frames {
+            if shift_down {
+                self.current_frame = (self.current_frame + jump_1s).min(total_frames.saturating_sub(1));
+            } else if self.current_frame + 1 < total_frames {
                 self.current_frame += 1;
-                action = Some(PlayerAction::Seek(self.current_frame));
             }
+            action = Some(PlayerAction::Seek(self.current_frame));
         }
         if !editing_text && ui.input(|i| i.key_pressed(egui::Key::Home)) {
             self.current_frame = 0;
@@ -102,8 +125,15 @@ impl PlayerView {
             self.zoom_mode = ZoomMode::Scale((cur * 0.8).max(0.15));
         }
 
-        // 1. Studio Player Header Bar (Hidden in pure fullscreen cinema mode unless HUD is requested)
-        if !self.is_fullscreen || self.show_overlay_controls {
+        if !editing_text && ui.input(|i| i.key_pressed(egui::Key::M)) {
+            self.is_muted = !self.is_muted;
+            if let Ok(mut a) = playback.audio.lock() {
+                a.set_muted(self.is_muted);
+            }
+        }
+
+        // 1. Studio Player Header Bar (Shown in regular windowed player)
+        if !self.is_fullscreen {
             if let Some(header_act) = HeaderBar::show(self, ui, video, playback) {
                 action = Some(header_act);
             }
@@ -153,11 +183,30 @@ impl PlayerView {
         // 2. Main Viewport Canvas (Cinema Screen)
         Canvas::show(self, ui, video, playback);
 
-        // 3. Bottom Studio Console: Full Playbar + Transport Controls (Hidden in pure fullscreen unless HUD is on)
-        if !self.is_fullscreen || self.show_overlay_controls {
+        // 3. Bottom Controls:
+        if !self.is_fullscreen {
+            // In normal windowed mode, show standard bottom Studio Console
             ui.add_space(4.0);
             if let Some(transport_act) = TransportBar::show(self, ui, video, playback, total_frames) {
                 action = Some(transport_act);
+            }
+        } else {
+            // In fullscreen mode, calculate smooth fade alpha based on mouse idle time (3.0s idle timeout)
+            let idle_secs = self.last_interaction_time.elapsed().as_secs_f32();
+            let alpha = if idle_secs < 2.5 {
+                1.0
+            } else if idle_secs < 3.0 {
+                // Smooth 0.5s fade out
+                1.0 - (idle_secs - 2.5) / 0.5
+            } else {
+                0.0
+            };
+
+            if alpha > 0.0 {
+                ui.ctx().request_repaint();
+                if let Some(overlay_act) = FullscreenOverlay::show(self, ui, video, playback, total_frames, alpha) {
+                    action = Some(overlay_act);
+                }
             }
         }
 

@@ -115,6 +115,19 @@ pub struct TagRecord {
     pub id: i64,
     pub name: String,
     pub color: String,
+    #[serde(default)]
+    pub parent_id: Option<i64>,
+}
+
+/// Represents a hierarchical keyword node in a tree
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TagNode {
+    pub id: i64,
+    pub name: String,
+    pub parent_id: Option<i64>,
+    pub direct_count: usize,
+    pub total_count: usize,
+    pub children: Vec<TagNode>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -197,6 +210,7 @@ pub struct Facets {
     pub cameras: Vec<Facet>,
     pub lenses: Vec<Facet>,
     pub tags: Vec<Facet>,
+    pub tag_tree: Vec<TagNode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

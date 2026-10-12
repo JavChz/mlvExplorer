@@ -16,6 +16,7 @@ pub struct GridView {
     pub group_by_day: bool,
     pub drag_start_pos: Option<egui::Pos2>,
     pub drag_current_pos: Option<egui::Pos2>,
+    pub scrollbar_tooltip_rect: Option<egui::Rect>,
 }
 
 impl Default for GridView {
@@ -25,6 +26,7 @@ impl Default for GridView {
             group_by_day: true,
             drag_start_pos: None,
             drag_current_pos: None,
+            scrollbar_tooltip_rect: None,
         }
     }
 }

@@ -17,7 +17,7 @@ impl Canvas {
         video: &VideoRecord,
         playback: &Playback,
     ) {
-        let bottom_height = if view.is_fullscreen && !view.show_overlay_controls { 0.0 } else { 76.0 };
+        let bottom_height = if view.is_fullscreen { 0.0 } else { 76.0 };
         let canvas_height = (ui.available_height() - bottom_height).max(50.0);
         let canvas_size = Vec2::new(ui.available_width(), canvas_height);
         let (rect, canvas_response) = ui.allocate_exact_size(canvas_size, egui::Sense::click_and_drag());
@@ -42,23 +42,21 @@ impl Canvas {
         if canvas_response.double_clicked() {
             view.is_fullscreen = !view.is_fullscreen;
             if view.is_fullscreen {
-                view.show_overlay_controls = false;
                 view.zoom_mode = ZoomMode::Fit;
                 view.pan_offset = Vec2::ZERO;
             }
+            view.last_interaction_time = std::time::Instant::now();
         } else if canvas_response.clicked() {
-            if view.is_fullscreen {
-                view.show_overlay_controls = !view.show_overlay_controls;
-            } else {
-                view.is_playing = !view.is_playing;
-                view.last_frame_time = std::time::Instant::now();
-                let time_sec = view.current_frame as f32 / video.fps.max(1.0);
-                if let Ok(mut a) = playback.audio.lock() {
-                    if view.is_playing {
-                        a.play(time_sec);
-                    } else {
-                        a.pause();
-                    }
+            // Click toggles play / pause in all modes, while HUD overlay controls show upon mouse movement
+            view.is_playing = !view.is_playing;
+            view.last_frame_time = std::time::Instant::now();
+            view.last_interaction_time = std::time::Instant::now();
+            let time_sec = view.current_frame as f32 / video.fps.max(1.0);
+            if let Ok(mut a) = playback.audio.lock() {
+                if view.is_playing {
+                    a.play(time_sec);
+                } else {
+                    a.pause();
                 }
             }
         }

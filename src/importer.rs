@@ -1,6 +1,8 @@
 use crate::db::Database;
 use crate::mlv::MlvClip;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// Progress update message sent from background import worker to UI
 #[derive(Debug, Clone)]
@@ -24,6 +26,12 @@ pub enum ImportMessage {
         failed: usize,
     },
     Complete {
+        total: usize,
+        imported: usize,
+        duplicates: usize,
+        failed: usize,
+    },
+    Cancelled {
         total: usize,
         imported: usize,
         duplicates: usize,
@@ -63,6 +71,7 @@ impl Importer {
         paths: Vec<PathBuf>,
         db_path: PathBuf,
         tx: crossbeam_channel::Sender<ImportMessage>,
+        cancel_flag: Arc<AtomicBool>,
         ctx: egui::Context,
     ) {
         let files = Self::collect_mlv_files(paths);
@@ -82,6 +91,17 @@ impl Importer {
             let mut failed = 0;
 
             for (idx, path) in files.into_iter().enumerate() {
+                if cancel_flag.load(Ordering::Relaxed) {
+                    let _ = tx.send(ImportMessage::Cancelled {
+                        total,
+                        imported,
+                        duplicates,
+                        failed,
+                    });
+                    ctx.request_repaint();
+                    return;
+                }
+
                 let file_name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
@@ -132,3 +152,37 @@ impl Importer {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_importer_cancellation() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let cancel_flag = Arc::new(AtomicBool::new(true)); // Already cancelled
+
+        let temp_dir = std::env::temp_dir().join(format!("importer_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let db_path = temp_dir.join("test.db");
+        let _ = Database::open(&db_path).unwrap();
+
+        let clip_path = temp_dir.join("test_clip.mlv");
+        std::fs::write(&clip_path, b"MLVI").unwrap();
+        let dummy_paths = vec![clip_path];
+
+        Importer::start(dummy_paths, db_path, tx, cancel_flag, egui::Context::default());
+
+        // We should receive Cancelled, NOT Complete
+        let msg = rx.recv_timeout(std::time::Duration::from_secs(2)).expect("Should receive message");
+        match msg {
+            ImportMessage::Cancelled { imported, .. } => {
+                assert_eq!(imported, 0);
+            }
+            _ => panic!("Expected Cancelled message"),
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+}
+

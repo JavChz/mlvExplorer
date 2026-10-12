@@ -101,17 +101,17 @@ impl Navigator {
                     }
                 });
 
-                // Section: KEYWORDS / TAGS
-                let trailing_tags = (!facets.tags.is_empty()).then(|| RichText::new(facets.tags.len().to_string()).size(FONT_CAPTION).color(TEXT_MUTED).into());
+                // Section: KEYWORDS / TAGS (Hierarchical tree like Lightroom)
+                let total_tags_count = facets.tags.len();
+                let trailing_tags = (total_tags_count > 0).then(|| RichText::new(total_tags_count.to_string()).size(FONT_CAPTION).color(TEXT_MUTED).into());
                 widgets::section(ui, "Keywords", true, trailing_tags, |ui| {
-                    if facets.tags.is_empty() {
+                    if facets.tag_tree.is_empty() {
                         ui.label(RichText::new("No keywords created").size(FONT_SMALL).color(TEXT_HINT));
-                    }
-                    for tag in &facets.tags {
-                        let is_sel = filter.tag.as_ref() == Some(&tag.name);
-                        if Self::nav_item(ui, is_sel, icon::TAG, &tag.name, tag.count, Some(ACCENT_HOVER), None) {
-                            filter.tag = if is_sel { None } else { Some(tag.name.clone()) };
-                            changed = true;
+                    } else {
+                        for node in &facets.tag_tree {
+                            if Self::render_keyword_tree_node(ui, node, filter, 0, &mut changed) {
+                                // Handled inside helper
+                            }
                         }
                     }
                 });
@@ -220,5 +220,145 @@ impl Navigator {
         );
 
         response.clicked()
+    }
+
+    /// Renders a hierarchical keyword node like Lightroom:
+    /// - Indented according to depth level
+    /// - Expand / collapse caret if node has children
+    /// - Tag glyph + Keyword name
+    /// - Aggregated count badge
+    /// - Hover arrow icon on the right to immediately filter the view to this keyword
+    fn render_keyword_tree_node(
+        ui: &mut Ui,
+        node: &crate::db::TagNode,
+        filter: &mut FilterCriteria,
+        depth: usize,
+        changed: &mut bool,
+    ) -> bool {
+        let is_sel = filter.tag.as_ref() == Some(&node.name);
+        let id = ui.make_persistent_id(format!("kw_node_{}", node.id));
+        let mut is_expanded = ui.data_mut(|d| d.get_temp::<bool>(id).unwrap_or(true));
+
+        let indent = depth as f32 * 14.0;
+        let row_height = 24.0;
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), Sense::click());
+        let painter = ui.painter();
+
+        // Row background
+        if is_sel {
+            painter.rect_filled(rect, Rounding::same(ROUNDING), ACCENT_DIM);
+            painter.rect_stroke(rect, Rounding::same(ROUNDING), Stroke::new(1.0_f32, ACCENT));
+        } else if response.hovered() {
+            painter.rect_filled(rect, Rounding::same(ROUNDING), BG_CARD_HOVER);
+        }
+
+        let center_y = rect.center().y;
+        let mut cur_x = rect.min.x + 4.0 + indent;
+
+        // Caret toggle for children
+        let has_children = !node.children.is_empty();
+        if has_children {
+            let caret_glyph = if is_expanded { icon::CARET_DOWN } else { icon::CARET_RIGHT };
+            let caret_rect = Rect::from_center_size(Pos2::new(cur_x + 6.0, center_y), Vec2::new(14.0, 14.0));
+            let caret_resp = ui.interact(caret_rect, id.with("caret"), Sense::click());
+            if caret_resp.clicked() {
+                is_expanded = !is_expanded;
+                ui.data_mut(|d| d.insert_temp(id, is_expanded));
+            }
+            painter.text(
+                caret_rect.center(),
+                Align2::CENTER_CENTER,
+                caret_glyph,
+                FontId::proportional(11.0),
+                if caret_resp.hovered() { Color32::WHITE } else { TEXT_MUTED },
+            );
+        } else {
+            // Bullet or subtle dot
+            painter.circle_filled(Pos2::new(cur_x + 6.0, center_y), 1.5, TEXT_MUTED);
+        }
+        cur_x += 16.0;
+
+        // Tag icon
+        let tag_col = if is_sel { Color32::WHITE } else { ACCENT_HOVER };
+        painter.text(
+            Pos2::new(cur_x, center_y),
+            Align2::LEFT_CENTER,
+            icon::TAG,
+            FontId::proportional(12.0),
+            tag_col,
+        );
+        cur_x += 16.0;
+
+        // Right side: Count badge + Filter Arrow button
+        // Arrow button rect:
+        let arrow_size = 18.0;
+        let arrow_rect = Rect::from_center_size(
+            Pos2::new(rect.max.x - arrow_size * 0.5 - 4.0, center_y),
+            Vec2::new(arrow_size, arrow_size),
+        );
+        let arrow_resp = ui.interact(arrow_rect, id.with("arrow_filter"), Sense::click());
+        let arrow_hovered = arrow_resp.hovered();
+
+        // Right Count Badge Pill
+        let count_str = format!("{}", node.total_count);
+        let badge_w = (count_str.len() as f32 * 6.5 + 10.0).max(18.0);
+        let badge_rect = Rect::from_center_size(
+            Pos2::new(arrow_rect.min.x - badge_w * 0.5 - 4.0, center_y),
+            Vec2::new(badge_w, 15.0),
+        );
+
+        let badge_bg = if is_sel { ACCENT.gamma_multiply(0.4) } else { BG_FIELD };
+        painter.rect_filled(badge_rect, Rounding::same(8.0), badge_bg);
+        painter.text(
+            badge_rect.center(),
+            Align2::CENTER_CENTER,
+            &count_str,
+            FontId::proportional(FONT_CAPTION),
+            if is_sel { Color32::WHITE } else { TEXT_MUTED },
+        );
+
+        // Arrow button on right (Lightroom style filter arrow)
+        if response.hovered() || is_sel || arrow_hovered {
+            let arrow_bg = if arrow_hovered { ACCENT } else { Color32::TRANSPARENT };
+            painter.rect_filled(arrow_rect, Rounding::same(3.0), arrow_bg);
+            painter.text(
+                arrow_rect.center(),
+                Align2::CENTER_CENTER,
+                icon::ARROW_RIGHT,
+                FontId::proportional(12.0),
+                if arrow_hovered || is_sel { Color32::WHITE } else { TEXT_SECONDARY },
+            );
+        }
+
+        // Clicking the arrow specifically sets/toggles filtering to this keyword
+        if arrow_resp.clicked() {
+            filter.tag = if is_sel { None } else { Some(node.name.clone()) };
+            *changed = true;
+        } else if response.clicked() {
+            // Clicking the row selects/filters the keyword
+            filter.tag = if is_sel { None } else { Some(node.name.clone()) };
+            *changed = true;
+        }
+
+        // Text label in middle with safe elision
+        let max_label_w = (badge_rect.min.x - cur_x - 6.0).max(10.0);
+        let font_id = FontId::proportional(FONT_BODY);
+        let elided = widgets::elide(ui, &node.name, &font_id, max_label_w);
+        painter.text(
+            Pos2::new(cur_x, center_y),
+            Align2::LEFT_CENTER,
+            elided,
+            font_id,
+            if is_sel { Color32::WHITE } else { TEXT_PRIMARY },
+        );
+
+        // Recursively render children if expanded
+        if has_children && is_expanded {
+            for child in &node.children {
+                Self::render_keyword_tree_node(ui, child, filter, depth + 1, changed);
+            }
+        }
+
+        response.clicked() || arrow_resp.clicked()
     }
 }

@@ -76,7 +76,12 @@ impl MlvMetadata {
     /// Defaults to 1.0 (1:1 square pixel) when not certain.
     pub fn default_stretch(&self) -> f32 {
         // 1. Explicit DISP block from Magic Lantern:
-        if self.pixel_aspect_ratio > 0.05 && (self.pixel_aspect_ratio - 1.0).abs() > 0.01 {
+        if self.pixel_aspect_ratio > 0.05 {
+            // If PAR is explicitly ~1.0, clip is definitely standard square pixels (1:1)
+            if (self.pixel_aspect_ratio - 1.0).abs() <= 0.05 {
+                return 1.0;
+            }
+
             // Some MLV tools / encoders write PAR as H:W (e.g. 1/3 or 1/2) rather than W:H.
             // In our viewer, stretch_factor is a horizontal expansion multiplier (>= 1.0).
             let par = if self.pixel_aspect_ratio < 0.85 {
@@ -99,13 +104,30 @@ impl MlvMetadata {
             }
         }
 
-        // 2. Explicit RAWC block indicating asymmetric sensor binning (e.g. 1x3 or 3x1):
+        // 2. Geometry check:
+        // If raw frame is already standard 16:9 or wider (e.g. 1920x1080 = 1.78, 1728x972 = 1.78, 2.39:1 crop),
+        // it is already a rectangular widescreen image with 1:1 square pixels.
+        // Canon's standard 1080p line-skipping sensor readout reports binning_x=3, binning_y=1 in RAWC,
+        // which describes sensor sampling, NOT anamorphic squeeze! Stretching a 16:9 frame by 3x yields
+        // an absurd 5.33:1 ribbon. Therefore, only narrow raw frames (AR < 1.45) can be genuine 1x3/3x1 anamorphic.
+        let raw_ar = if self.width > 0 && self.height > 0 {
+            self.width as f32 / self.height as f32
+        } else {
+            1.78
+        };
+
+        if raw_ar >= 1.45 {
+            // Standard widescreen footage (16:9, 17:9, 2.35:1) is 1:1 square pixels.
+            return 1.0;
+        }
+
+        // 3. Explicit RAWC block indicating asymmetric sensor binning (e.g. 1x3 or 3x1 on narrow crop):
         if self.binning_x > 0 && self.binning_y > 0 && self.binning_x != self.binning_y {
             let max_bin = self.binning_x.max(self.binning_y) as f32;
             let min_bin = self.binning_x.min(self.binning_y) as f32;
             let ratio = max_bin / min_bin.max(1.0);
             if (ratio - 3.0).abs() < 0.25 {
-                return 3.0; // 1x3 or 3x1 binning mode
+                return 3.0; // 1x3 or 3x1 anamorphic crop mode
             } else if (ratio - 2.0).abs() < 0.2 {
                 return 2.0;
             } else if (ratio - 1.5).abs() < 0.15 {
@@ -113,7 +135,7 @@ impl MlvMetadata {
             }
         }
 
-        // Default to standard 1:1 square pixels when not explicitly set
+        // Default to standard 1:1 square pixels
         1.0
     }
 
@@ -172,3 +194,43 @@ pub struct AudioChunkRef {
     pub offset: u64,
     pub size: u32,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_stretch_standard_1080p() {
+        // Standard Canon 5D3 1080p with 3x1 line-skipping binning in RAWC
+        let mut meta = MlvMetadata::default();
+        meta.width = 1920;
+        meta.height = 1080;
+        meta.binning_x = 3;
+        meta.binning_y = 1;
+        meta.pixel_aspect_ratio = 1.0;
+        assert_eq!(meta.default_stretch(), 1.0);
+
+        // Even with no DISP block (PAR = 0.0), 1920x1080 is widescreen -> must be 1.0
+        meta.pixel_aspect_ratio = 0.0;
+        assert_eq!(meta.default_stretch(), 1.0);
+    }
+
+    #[test]
+    fn test_default_stretch_genuine_anamorphic() {
+        // Narrow raw crop 1280x1380 with 3x1 binning
+        let mut meta = MlvMetadata::default();
+        meta.width = 1280;
+        meta.height = 1380;
+        meta.binning_x = 3;
+        meta.binning_y = 1;
+        assert_eq!(meta.default_stretch(), 3.0);
+
+        // Explicit 2x anamorphic DISP block
+        let mut meta2 = MlvMetadata::default();
+        meta2.width = 1920;
+        meta2.height = 1080;
+        meta2.pixel_aspect_ratio = 2.0;
+        assert_eq!(meta2.default_stretch(), 2.0);
+    }
+}
+

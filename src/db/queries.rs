@@ -1,4 +1,6 @@
-use crate::db::models::{CatalogBackup, Facet, Facets, FilterCriteria, PickFlag, TagRecord, VideoRecord};
+use crate::db::models::{
+    CatalogBackup, Facet, Facets, FilterCriteria, PickFlag, TagNode, TagRecord, VideoRecord,
+};
 use rusqlite::{params, Connection, OptionalExtension, Result};
 use std::path::{Path, PathBuf};
 
@@ -198,7 +200,14 @@ impl<'a> Queries<'a> {
         if let Some(tag) = &filter.tag {
             push(
                 &mut query,
-                " AND v.id IN (SELECT vt.video_id FROM video_tags vt JOIN tags t ON t.id = vt.tag_id WHERE t.name = ?)",
+                " AND v.id IN (
+                    WITH RECURSIVE tag_family(id) AS (
+                        SELECT id FROM tags WHERE name = ?
+                        UNION ALL
+                        SELECT t.id FROM tags t JOIN tag_family tf ON t.parent_id = tf.id
+                    )
+                    SELECT vt.video_id FROM video_tags vt WHERE vt.tag_id IN (SELECT id FROM tag_family)
+                )",
                 Box::new(tag.clone()),
                 &mut p,
             );
@@ -291,6 +300,7 @@ impl<'a> Queries<'a> {
         f.tags = facet(
             "SELECT t.name, COUNT(vt.video_id) FROM tags t JOIN video_tags vt ON vt.tag_id = t.id GROUP BY t.id ORDER BY t.name COLLATE NOCASE",
         )?;
+        f.tag_tree = self.get_tag_tree().unwrap_or_default();
         Ok(f)
     }
 
@@ -339,15 +349,60 @@ impl<'a> Queries<'a> {
         Ok(())
     }
 
+    pub fn create_tag(&self, name: &str, parent_id: Option<i64>) -> Result<i64> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        self.conn.execute(
+            "INSERT OR IGNORE INTO tags (name, parent_id) VALUES (?1, ?2)",
+            params![name, parent_id],
+        )?;
+        let tag_id: i64 = self.conn.query_row("SELECT id FROM tags WHERE name = ?1", params![name], |r| r.get(0))?;
+        if parent_id.is_some() {
+            self.conn.execute(
+                "UPDATE tags SET parent_id = ?1 WHERE id = ?2",
+                params![parent_id, tag_id],
+            )?;
+        }
+        Ok(tag_id)
+    }
+
+    pub fn set_tag_parent(&self, tag_id: i64, parent_id: Option<i64>) -> Result<()> {
+        // Prevent cycle (tag cannot be parent of itself)
+        if let Some(pid) = parent_id {
+            if pid == tag_id {
+                return Ok(());
+            }
+        }
+        self.conn.execute(
+            "UPDATE tags SET parent_id = ?1 WHERE id = ?2",
+            params![parent_id, tag_id],
+        )?;
+        Ok(())
+    }
+
     pub fn remove_tag(&self, video_id: i64, tag_name: &str) -> Result<()> {
         self.conn.execute(
             "DELETE FROM video_tags WHERE video_id = ?1 AND tag_id = (SELECT id FROM tags WHERE name = ?2)",
             params![video_id, tag_name],
         )?;
-        self.conn.execute(
-            "DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM video_tags)",
-            [],
-        )?;
+        Ok(())
+    }
+
+    pub fn delete_keyword(&self, tag_name: &str) -> Result<()> {
+        let tag_id: Option<i64> = self.conn.query_row(
+            "SELECT id FROM tags WHERE name = ?1",
+            params![tag_name],
+            |r| r.get(0),
+        ).optional()?;
+
+        if let Some(id) = tag_id {
+            // Update children to point to null or re-parent
+            self.conn.execute("UPDATE tags SET parent_id = NULL WHERE parent_id = ?1", params![id])?;
+            self.conn.execute("DELETE FROM video_tags WHERE tag_id = ?1", params![id])?;
+            self.conn.execute("DELETE FROM tags WHERE id = ?1", params![id])?;
+        }
         Ok(())
     }
 
@@ -365,15 +420,69 @@ impl<'a> Queries<'a> {
     }
 
     pub fn get_all_tags(&self) -> Result<Vec<TagRecord>> {
-        let mut stmt = self.conn.prepare("SELECT id, name, color FROM tags ORDER BY name")?;
+        let mut stmt = self.conn.prepare("SELECT id, name, color, parent_id FROM tags ORDER BY name COLLATE NOCASE")?;
         let rows = stmt.query_map([], |r| {
             Ok(TagRecord {
                 id: r.get(0)?,
                 name: r.get(1)?,
                 color: r.get(2)?,
+                parent_id: r.get(3)?,
             })
         })?;
         rows.collect()
+    }
+
+    /// Builds a hierarchical keyword tree with direct counts and aggregated family counts
+    pub fn get_tag_tree(&self) -> Result<Vec<TagNode>> {
+        let tags = self.get_all_tags()?;
+        
+        // Fetch direct counts for each tag
+        let mut direct_counts: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT tag_id, COUNT(video_id) FROM video_tags GROUP BY tag_id"
+            )?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let tag_id: i64 = row.get(0)?;
+                let count: i64 = row.get(1)?;
+                direct_counts.insert(tag_id, count as usize);
+            }
+        }
+
+        // Build adjacency list parent -> children
+        let mut children_map: std::collections::HashMap<Option<i64>, Vec<TagRecord>> = std::collections::HashMap::new();
+        for t in tags {
+            children_map.entry(t.parent_id).or_default().push(t);
+        }
+
+        // Recursive helper to build tree and calculate total counts
+        fn build_subtree(
+            parent_id: Option<i64>,
+            children_map: &std::collections::HashMap<Option<i64>, Vec<TagRecord>>,
+            direct_counts: &std::collections::HashMap<i64, usize>,
+        ) -> Vec<TagNode> {
+            let mut nodes = Vec::new();
+            if let Some(list) = children_map.get(&parent_id) {
+                for item in list {
+                    let direct = direct_counts.get(&item.id).copied().unwrap_or(0);
+                    let sub_children = build_subtree(Some(item.id), children_map, direct_counts);
+                    let sub_sum: usize = sub_children.iter().map(|c| c.total_count).sum();
+                    let total = direct + sub_sum;
+                    nodes.push(TagNode {
+                        id: item.id,
+                        name: item.name.clone(),
+                        parent_id: item.parent_id,
+                        direct_count: direct,
+                        total_count: total,
+                        children: sub_children,
+                    });
+                }
+            }
+            nodes
+        }
+
+        Ok(build_subtree(None, &children_map, &direct_counts))
     }
 
     pub fn backup_database_to_file<P: AsRef<Path>>(&self, dest_path: P) -> Result<()> {
