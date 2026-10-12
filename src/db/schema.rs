@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, Result};
+use rusqlite::{Connection, Result};
 
 pub const SCHEMA_VERSION: i64 = 4;
 

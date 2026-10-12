@@ -1,5 +1,7 @@
 use crate::db::{default_catalog_path, Database, Facets, FilterCriteria, PickFlag, VideoRecord};
 use crate::gpu;
+use crate::importer::{ImportMessage, ImportProgress, Importer};
+use crate::launcher::ExternalLauncher;
 use crate::mlv::{FrameSource, MlvClip};
 use crate::playback::Playback;
 use crate::thumbnails::ThumbnailManager;
@@ -11,33 +13,6 @@ use std::path::{Path, PathBuf};
 pub enum ViewMode {
     Grid,
     Player,
-}
-
-#[derive(Debug, Clone)]
-pub struct ImportProgress {
-    pub current: usize,
-    pub total: usize,
-    pub current_file: String,
-    pub imported: usize,
-    pub duplicates: usize,
-    pub failed: usize,
-}
-
-pub enum ImportMessage {
-    Progress {
-        current: usize,
-        total: usize,
-        current_file: String,
-        imported: usize,
-        duplicates: usize,
-        failed: usize,
-    },
-    Complete {
-        total: usize,
-        imported: usize,
-        duplicates: usize,
-        failed: usize,
-    },
 }
 
 pub struct MlvExplorerApp {
@@ -212,32 +187,13 @@ impl MlvExplorerApp {
 
     /// Start a background import of files or directories, skipping duplicates and tracking progress
     pub fn start_import(&mut self, paths: Vec<PathBuf>, ctx: &egui::Context) {
-        let mut files_to_import = Vec::new();
-        for path in paths {
-            if path.is_file() {
-                if path.extension().map_or(false, |ext| ext.eq_ignore_ascii_case("mlv")) {
-                    files_to_import.push(path);
-                }
-            } else if path.is_dir() {
-                for entry in walkdir::WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
-                    let p = entry.into_path();
-                    if p.is_file() && p.extension().map_or(false, |ext| ext.eq_ignore_ascii_case("mlv")) {
-                        files_to_import.push(p);
-                    }
-                }
-            }
-        }
-
-        // Deduplicate paths in the current batch
-        let mut seen = std::collections::HashSet::new();
-        files_to_import.retain(|p| seen.insert(p.clone()));
-
-        if files_to_import.is_empty() {
+        let files = Importer::collect_mlv_files(paths);
+        if files.is_empty() {
             self.status_bar_text = "No .MLV files found in selected path(s).".to_string();
             return;
         }
 
-        let total = files_to_import.len();
+        let total = files.len();
         self.import_progress = Some(ImportProgress {
             current: 0,
             total,
@@ -247,185 +203,19 @@ impl MlvExplorerApp {
             failed: 0,
         });
 
-        let tx = self.import_tx.clone();
-        let db_path = self.db.path.clone();
-        let ctx_clone = ctx.clone();
-
-        std::thread::spawn(move || {
-            let db = match Database::open(&db_path) {
-                Ok(db) => db,
-                Err(e) => {
-                    eprintln!("Failed to open DB for import worker: {e}");
-                    return;
-                }
-            };
-
-            let mut imported = 0;
-            let mut duplicates = 0;
-            let mut failed = 0;
-
-            for (idx, path) in files_to_import.into_iter().enumerate() {
-                let file_name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "clip.mlv".to_string());
-
-                let _ = tx.send(ImportMessage::Progress {
-                    current: idx + 1,
-                    total,
-                    current_file: file_name.clone(),
-                    imported,
-                    duplicates,
-                    failed,
-                });
-                ctx_clone.request_repaint();
-
-                // 1. Path-based check: is this path or its canonical equivalent already in the catalog?
-                if db.is_file_imported(&path) {
-                    duplicates += 1;
-                    continue;
-                }
-
-                // 2. Open clip header & check content signature
-                match MlvClip::open(&path) {
-                    Ok(clip) => {
-                        // Check if identical content (file size, frames, date, camera) already exists
-                        match db.insert_new_video(&clip.meta) {
-                            Ok(Some(_id)) => {
-                                imported += 1;
-                            }
-                            Ok(None) => {
-                                duplicates += 1;
-                            }
-                            Err(e) => {
-                                eprintln!("Error saving clip {}: {}", path.display(), e);
-                                failed += 1;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to read MLV file {}: {}", path.display(), e);
-                        failed += 1;
-                    }
-                }
-            }
-
-            let _ = tx.send(ImportMessage::Complete {
-                total,
-                imported,
-                duplicates,
-                failed,
-            });
-            ctx_clone.request_repaint();
-        });
+        Importer::start(
+            files,
+            self.db.path.clone(),
+            self.import_tx.clone(),
+            ctx.clone(),
+        );
     }
 
     /// Open a given clip file path in MLV App executable
     pub fn open_in_mlv_app(&mut self, file_path: &Path) {
-        let abs_path = match std::fs::canonicalize(file_path) {
-            Ok(p) => p,
-            Err(_) => file_path.to_path_buf(),
-        };
-
-        // 1. Check if user already configured/saved an executable path in database
-        let mut exe_path: Option<PathBuf> = self
-            .db
-            .get_setting("mlv_app_path")
-            .ok()
-            .flatten()
-            .map(PathBuf::from)
-            .filter(|p| p.is_file());
-
-        // 2. If not saved or file was moved/deleted, search standard installation paths & PATH
-        if exe_path.is_none() {
-            let mut candidates: Vec<PathBuf> = Vec::new();
-
-            // Check standard program directories on Windows
-            if let Ok(prog_files) = std::env::var("ProgramFiles") {
-                candidates.push(PathBuf::from(&prog_files).join("MLV App").join("MLV App.exe"));
-                candidates.push(PathBuf::from(&prog_files).join("MLVApp").join("MLV App.exe"));
-                candidates.push(PathBuf::from(&prog_files).join("MLVApp").join("mlvapp.exe"));
-            }
-            if let Ok(prog_files_x86) = std::env::var("ProgramFiles(x86)") {
-                candidates.push(PathBuf::from(&prog_files_x86).join("MLV App").join("MLV App.exe"));
-                candidates.push(PathBuf::from(&prog_files_x86).join("MLVApp").join("mlvapp.exe"));
-            }
-            if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
-                candidates.push(PathBuf::from(&local_appdata).join("Programs").join("MLV App").join("MLV App.exe"));
-                candidates.push(PathBuf::from(&local_appdata).join("MLV App").join("MLV App.exe"));
-            }
-
-            // Also check Desktop, Downloads, and common user folders where portable builds are extracted
-            if let Ok(user_profile) = std::env::var("USERPROFILE") {
-                let up = PathBuf::from(user_profile);
-                candidates.push(up.join("Downloads").join("MLV App.exe"));
-                candidates.push(up.join("Desktop").join("MLV App.exe"));
-            }
-
-            // Check system PATH
-            if let Ok(path_var) = std::env::var("PATH") {
-                for dir in std::env::split_paths(&path_var) {
-                    let c1 = dir.join("MLV App.exe");
-                    let c2 = dir.join("mlvapp.exe");
-                    let c3 = dir.join("mlv_app.exe");
-                    if c1.is_file() {
-                        candidates.push(c1);
-                        break;
-                    }
-                    if c2.is_file() {
-                        candidates.push(c2);
-                        break;
-                    }
-                    if c3.is_file() {
-                        candidates.push(c3);
-                        break;
-                    }
-                }
-            }
-
-            for cand in candidates {
-                if cand.is_file() {
-                    exe_path = Some(cand);
-                    break;
-                }
-            }
-        }
-
-        // 3. If still not found, open a file picker to prompt user to locate MLV App
-        if exe_path.is_none() {
-            let filter_ext = if cfg!(target_os = "windows") {
-                &["exe"][..]
-            } else if cfg!(target_os = "macos") {
-                &["app"][..]
-            } else {
-                &["AppImage", "bin", "*"][..]
-            };
-
-            if let Some(picked) = rfd::FileDialog::new()
-                .set_title("Locate MLV App executable (MLV App.exe)")
-                .add_filter("MLV App Executable", filter_ext)
-                .pick_file()
-            {
-                if picked.is_file() {
-                    let _ = self.db.set_setting("mlv_app_path", &picked.to_string_lossy());
-                    exe_path = Some(picked);
-                }
-            }
-        }
-
-        // 4. Launch MLV App with the clip path as argument
-        if let Some(exe) = exe_path {
-            let _ = self.db.set_setting("mlv_app_path", &exe.to_string_lossy());
-            match std::process::Command::new(&exe).arg(&abs_path).spawn() {
-                Ok(_) => {
-                    self.status_bar_text = format!("Launched MLV App with: {}", abs_path.display());
-                }
-                Err(e) => {
-                    self.status_bar_text = format!("Failed to launch MLV App ({}): {}", exe.display(), e);
-                }
-            }
-        } else {
-            self.status_bar_text = "MLV App executable not configured or not found.".to_string();
+        match ExternalLauncher::open_in_mlv_app(&self.db, file_path) {
+            Ok(msg) => self.status_bar_text = msg,
+            Err(e) => self.status_bar_text = e,
         }
     }
 

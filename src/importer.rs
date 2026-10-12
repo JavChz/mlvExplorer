@@ -1,6 +1,6 @@
 use crate::db::Database;
 use crate::mlv::MlvClip;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Progress update message sent from background import worker to UI
 #[derive(Debug, Clone)]
