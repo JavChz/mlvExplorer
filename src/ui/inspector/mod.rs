@@ -8,7 +8,8 @@ pub use types::{InspectorAction, Inspector};
 
 use crate::db::{Database, VideoRecord};
 use crate::ui::theme::*;
-use egui::{Color32, RichText, Ui};
+use crate::ui::widgets::icon;
+use egui::{Align2, FontId, Pos2, RichText, Rounding, Sense, Stroke, Ui, Vec2};
 
 impl Inspector {
     pub fn show(
@@ -20,78 +21,86 @@ impl Inspector {
         all_tags: &[String],
     ) -> Option<InspectorAction> {
         let mut action = None;
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("METADATA & TAGS").extra_letter_spacing(1.2).strong().size(11.0).color(TEXT_MUTED));
-            if selected_count > 1 {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        RichText::new(format!("{} clips selected", selected_count))
-                            .small()
-                            .strong()
-                            .color(Color32::from_rgb(96, 165, 250))
-                    );
-                });
-            }
-        });
-        ui.add_space(4.0);
-        ui.separator();
+
+        // Panel title bar
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), TOOLBAR_HEIGHT), Sense::hover());
+        let painter = ui.painter();
+        painter.text(
+            Pos2::new(rect.min.x + PANEL_PADDING, rect.center().y),
+            Align2::LEFT_CENTER,
+            "Metadata",
+            FontId::proportional(FONT_BODY + 0.5),
+            TEXT_PRIMARY,
+        );
+        if selected_count > 1 {
+            crate::ui::widgets::paint_badge(
+                painter,
+                Pos2::new(rect.max.x - PANEL_PADDING, rect.center().y),
+                Align2::RIGHT_CENTER,
+                &format!("{selected_count} selected"),
+                FontId::proportional(FONT_CAPTION),
+                egui::Color32::WHITE,
+                ACCENT_DIM,
+            );
+        }
+        painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0_f32, BORDER_SUBTLE));
 
         let Some(vid) = video else {
-            ui.add_space(40.0);
+            ui.add_space(60.0);
             ui.vertical_centered(|ui| {
-                ui.label(RichText::new("No clip selected").italics().color(TEXT_MUTED));
+                ui.label(RichText::new(icon::FILM_STRIP).size(32.0).color(TEXT_DISABLED));
+                ui.add_space(6.0);
+                ui.label(RichText::new("No clip selected").color(TEXT_MUTED));
+                ui.label(RichText::new("Select a clip to view its metadata").size(FONT_SMALL).color(TEXT_HINT));
             });
             return None;
         };
 
         if selected_count > 1 {
-            ui.label(
-                RichText::new("Batch Editing: Changes to rating, flags, tags, notes, slate, or stretch apply to all selected clips.")
-                    .small()
-                    .color(Color32::from_rgb(245, 158, 11))
-            );
-            ui.add_space(4.0);
+            egui::Frame::none()
+                .fill(ACCENT_DIM.gamma_multiply(0.55))
+                .inner_margin(egui::Margin::symmetric(PANEL_PADDING, 6.0))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(icon::INFO).color(ACCENT_HOVER));
+                        ui.label(
+                            RichText::new(format!(
+                                "Batch edit: changes apply to all {selected_count} selected clips."
+                            ))
+                            .size(FONT_SMALL)
+                            .color(TEXT_PRIMARY),
+                        );
+                    });
+                });
         }
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            // Organization & Quick Actions (Rating, Pick, MLVApp)
-            if let Some(org_act) = OrganizationSection::show(ui, vid, db) {
-                action = Some(org_act);
-            }
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
 
-            ui.add_space(8.0);
+                if let Some(a) = OrganizationSection::show(ui, vid, db) {
+                    action = Some(a);
+                }
+                if let Some(a) = ProductionSlateSection::show(ui, vid, db) {
+                    action = Some(a);
+                }
+                if let Some(a) = TagsSection::show(ui, vid, db, all_tags, &mut self.new_tag_input) {
+                    action = Some(a);
+                }
+                if let Some(a) = NotesSection::show(ui, vid, db) {
+                    action = Some(a);
+                }
+                if let Some(a) = TechnicalSpecs::show(ui, vid, db) {
+                    action = Some(a);
+                }
+                LocationSection::show(ui, &vid.file_path);
 
-            // Cinema Production Slate (Scene, Shot, Take, Unit, Location)
-            if let Some(slate_act) = ProductionSlateSection::show(ui, vid, db) {
-                action = Some(slate_act);
-            }
-
-            ui.add_space(8.0);
-
-            // Tags
-            if let Some(tag_act) = TagsSection::show(ui, vid, db, all_tags, &mut self.new_tag_input) {
-                action = Some(tag_act);
-            }
-
-            ui.add_space(8.0);
-
-            // Notes
-            if let Some(notes_act) = NotesSection::show(ui, vid, db) {
-                action = Some(notes_act);
-            }
-
-            ui.add_space(8.0);
-
-            // Camera, Optics & Technical Specs
-            if let Some(specs_act) = TechnicalSpecs::show(ui, vid, db) {
-                action = Some(specs_act);
-            }
-
-            ui.add_space(8.0);
-
-            // File Location
-            LocationSection::show(ui, &vid.file_path);
-        });
+                // Bottom rule closing the last section
+                let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
+                ui.painter().rect_filled(r, Rounding::ZERO, BORDER_SUBTLE);
+            });
 
         action
     }

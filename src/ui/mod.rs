@@ -7,6 +7,7 @@ pub mod playbar;
 pub mod player;
 pub mod theme;
 pub mod top_bar;
+pub mod widgets;
 
 pub use catalog_dialog::CatalogDialog;
 pub use delete_dialog::{DeleteConfirmDialog, DeleteConfirmResult, DeleteMode};

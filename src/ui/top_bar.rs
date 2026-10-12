@@ -1,6 +1,7 @@
 use crate::db::{FilterCriteria, PickFlag, SortOrder};
 use crate::ui::theme::*;
-use egui::{Color32, RichText, Rounding, Stroke, Ui};
+use crate::ui::widgets::{self, icon};
+use egui::{Color32, RichText, Rounding, Stroke, Ui, Vec2};
 
 pub enum TopBarAction {
     ImportFiles,
@@ -25,69 +26,94 @@ impl TopBar {
         let mut action = None;
 
         ui.horizontal(|ui| {
-            // Studio Brand Logo & Title
-            ui.add_space(4.0);
-            ui.label(RichText::new("🎬 MLV EXPLORER").strong().size(13.5).color(Color32::from_rgb(147, 197, 253)));
-            ui.add_space(6.0);
-            ui.separator();
-            ui.add_space(6.0);
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
 
-            // Workspace Mode Switcher (Photo browser Library / Loupe tabs)
+            // App Brand Name & Icon
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(icon::FILM_STRIP)
+                    .size(15.0)
+                    .color(ACCENT),
+            );
+            ui.label(
+                RichText::new("MLV EXPLORER")
+                    .strong()
+                    .size(FONT_BODY)
+                    .color(TEXT_PRIMARY)
+                    .extra_letter_spacing(0.8),
+            );
+            ui.add_space(8.0);
+
+            widgets::toolbar_divider(ui);
+
+            // Workspace View Mode Switcher (Grid / Player segmented control)
             let grid_active = !is_player_mode;
             let player_active = is_player_mode;
 
-            let grid_bg = if grid_active { Color32::from_rgb(45, 60, 85) } else { Color32::TRANSPARENT };
-            let grid_stroke = if grid_active { Stroke::new(1.0_f32, BORDER_SELECTED) } else { Stroke::NONE };
-            let grid_btn = egui::Button::new(RichText::new(" ▦ GRID [G] ").strong().size(12.0).color(if grid_active { Color32::WHITE } else { TEXT_SECONDARY }))
-                .fill(grid_bg)
-                .stroke(grid_stroke)
-                .rounding(Rounding::same(4.0));
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
 
-            if ui.add(grid_btn).clicked() {
-                action = Some(TopBarAction::SwitchToGrid);
-            }
+                let grid_btn = egui::Button::new(
+                    RichText::new(format!("{}  Grid", icon::GRID_FOUR))
+                        .size(FONT_SMALL)
+                        .color(if grid_active { Color32::WHITE } else { TEXT_SECONDARY }),
+                )
+                .fill(if grid_active { ACCENT_DIM } else { Color32::TRANSPARENT })
+                .stroke(if grid_active { Stroke::new(1.0_f32, ACCENT) } else { Stroke::NONE })
+                .rounding(Rounding::same(ROUNDING))
+                .min_size(Vec2::new(0.0, CONTROL_HEIGHT));
 
-            ui.add_enabled_ui(can_open_player, |ui| {
-                let player_bg = if player_active { Color32::from_rgb(45, 60, 85) } else { Color32::TRANSPARENT };
-                let player_stroke = if player_active { Stroke::new(1.0_f32, BORDER_SELECTED) } else { Stroke::NONE };
-                let player_btn = egui::Button::new(RichText::new(" ▶ PLAYER [E] ").strong().size(12.0).color(if player_active { Color32::WHITE } else { TEXT_SECONDARY }))
-                    .fill(player_bg)
-                    .stroke(player_stroke)
-                    .rounding(Rounding::same(4.0));
+                if ui.add(grid_btn).on_hover_text("Grid View [G]").clicked() {
+                    action = Some(TopBarAction::SwitchToGrid);
+                }
 
-                if ui.add(player_btn).clicked() {
-                    action = Some(TopBarAction::SwitchToPlayer);
+                ui.add_enabled_ui(can_open_player, |ui| {
+                    let player_btn = egui::Button::new(
+                        RichText::new(format!("{}  Player", icon::PLAY))
+                            .size(FONT_SMALL)
+                            .color(if player_active { Color32::WHITE } else { TEXT_SECONDARY }),
+                    )
+                    .fill(if player_active { ACCENT_DIM } else { Color32::TRANSPARENT })
+                    .stroke(if player_active { Stroke::new(1.0_f32, ACCENT) } else { Stroke::NONE })
+                    .rounding(Rounding::same(ROUNDING))
+                    .min_size(Vec2::new(0.0, CONTROL_HEIGHT));
+
+                    if ui.add(player_btn).on_hover_text("Player View [E]").clicked() {
+                        action = Some(TopBarAction::SwitchToPlayer);
+                    }
+                });
+            });
+
+            widgets::toolbar_divider(ui);
+
+            // Filter Search Input with Clear Button and dedicated Hint Color
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
+                let search_width = 170.0;
+                let search_edit = ui.add_sized(
+                    [search_width, CONTROL_HEIGHT],
+                    egui::TextEdit::singleline(&mut filter.search_text)
+                        .hint_text(widgets::hint("Search clips, cameras, lenses…"))
+                        .margin(egui::vec2(6.0, 3.0)),
+                );
+                if search_edit.changed() {
+                    filter_changed = true;
+                }
+
+                if !filter.search_text.is_empty() {
+                    if widgets::icon_button(ui, icon::X, false, "Clear search").clicked() {
+                        filter.search_text.clear();
+                        filter_changed = true;
+                    }
                 }
             });
 
-            ui.add_space(6.0);
-            ui.separator();
-            ui.add_space(6.0);
-
-            // Search Input Field
-            ui.label(RichText::new("🔍").size(12.0).color(TEXT_MUTED));
-            let search_edit = ui.add(
-                egui::TextEdit::singleline(&mut filter.search_text)
-                    .hint_text("Search name, camera, lens, tag...")
-                    .desired_width(180.0),
-            );
-            if search_edit.changed() {
-                filter_changed = true;
-            }
-
-            if !filter.search_text.is_empty() && ui.small_button("×").clicked() {
-                filter.search_text.clear();
-                filter_changed = true;
-            }
-
-            ui.add_space(4.0);
-            ui.separator();
-            ui.add_space(4.0);
+            widgets::toolbar_divider(ui);
 
             // Sort Selector
-            ui.label(RichText::new("Sort:").small().color(TEXT_SECONDARY));
-            egui::ComboBox::from_id_salt("sort_order_combo")
-                .selected_text(RichText::new(filter.sort.label()).small())
+            ui.label(RichText::new("Sort:").size(FONT_SMALL).color(TEXT_MUTED));
+            egui::ComboBox::from_id_salt("topbar_sort_order_combo")
+                .selected_text(RichText::new(filter.sort.label()).size(FONT_SMALL))
                 .show_ui(ui, |ui| {
                     for sort_opt in SortOrder::ALL {
                         if ui.selectable_value(&mut filter.sort, sort_opt, sort_opt.label()).clicked() {
@@ -96,44 +122,63 @@ impl TopBar {
                     }
                 });
 
-            ui.add_space(4.0);
-            ui.separator();
-            ui.add_space(4.0);
+            widgets::toolbar_divider(ui);
 
             // Rating Filter Quick Toggles (All, 1★+, 2★+, 3★+, 4★+, 5★)
-            ui.label(RichText::new("Rating:").small().color(TEXT_SECONDARY));
+            ui.label(RichText::new("Rating:").size(FONT_SMALL).color(TEXT_MUTED));
             let r_all = filter.min_rating.is_none();
-            if ui.selectable_label(r_all, RichText::new("All").small()).clicked() {
+            if widgets::toggle_button(ui, r_all, "All").clicked() {
                 filter.min_rating = None;
                 filter_changed = true;
             }
             for r in 1..=5 {
                 let is_sel = filter.min_rating == Some(r);
-                let label = format!("{}★+", r);
-                if ui.selectable_label(is_sel, RichText::new(label).small().color(if is_sel { ACCENT_GOLD } else { TEXT_PRIMARY })).clicked() {
+                let star_label = format!("{}★+", r);
+                let btn = egui::Button::new(
+                    RichText::new(star_label)
+                        .size(FONT_CAPTION)
+                        .color(if is_sel { RATING } else { TEXT_SECONDARY }),
+                )
+                .fill(if is_sel { ACCENT_DIM } else { Color32::TRANSPARENT })
+                .stroke(if is_sel { Stroke::new(1.0_f32, ACCENT) } else { Stroke::NONE })
+                .min_size(Vec2::new(0.0, CONTROL_HEIGHT));
+
+                if ui.add(btn).clicked() {
                     filter.min_rating = if is_sel { None } else { Some(r) };
                     filter_changed = true;
                 }
             }
 
-            ui.add_space(4.0);
-            ui.separator();
-            ui.add_space(4.0);
+            widgets::toolbar_divider(ui);
 
-            // Pick / Reject Flags
-            ui.label(RichText::new("Flag:").small().color(TEXT_SECONDARY));
+            // Pick / Reject Flags filter
+            ui.label(RichText::new("Flag:").size(FONT_SMALL).color(TEXT_MUTED));
             let flag_all = filter.flag.is_none();
-            if ui.selectable_label(flag_all, RichText::new("All").small()).clicked() {
+            if widgets::toggle_button(ui, flag_all, "All").clicked() {
                 filter.flag = None;
                 filter_changed = true;
             }
+
             let is_pick = filter.flag == Some(PickFlag::Picked);
-            if ui.selectable_label(is_pick, RichText::new("🏳 Pick").small().color(FLAG_PICKED)).clicked() {
+            if widgets::icon_button_colored(
+                ui,
+                icon::FLAG,
+                is_pick,
+                Some(FLAG_PICKED),
+                "Filter Picks",
+            ).clicked() {
                 filter.flag = if is_pick { None } else { Some(PickFlag::Picked) };
                 filter_changed = true;
             }
+
             let is_rej = filter.flag == Some(PickFlag::Rejected);
-            if ui.selectable_label(is_rej, RichText::new("❌ Reject").small().color(FLAG_REJECTED)).clicked() {
+            if widgets::icon_button_colored(
+                ui,
+                icon::X_CIRCLE,
+                is_rej,
+                Some(FLAG_REJECTED),
+                "Filter Rejected",
+            ).clicked() {
                 filter.flag = if is_rej { None } else { Some(PickFlag::Rejected) };
                 filter_changed = true;
             }
@@ -141,23 +186,34 @@ impl TopBar {
             // Right-aligned actions: Import & Catalog
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(4.0);
-                if ui.button("🗄 Catalog Backup").clicked() {
-                    action = Some(TopBarAction::OpenCatalogModal);
-                }
-
-                if ui.button("📁 Import Folder").clicked() {
-                    action = Some(TopBarAction::ImportFolder);
-                }
-
-                if ui.button("📥 Import Files").clicked() {
-                    action = Some(TopBarAction::ImportFiles);
-                }
 
                 if filter.is_filtered() {
-                    if ui.button(RichText::new("Reset Filter").small().color(TEXT_MUTED)).clicked() {
+                    let reset_btn = egui::Button::new(
+                        RichText::new(format!("{} Reset", icon::ARROW_COUNTER_CLOCKWISE))
+                            .size(FONT_SMALL)
+                            .color(TEXT_MUTED),
+                    )
+                    .fill(Color32::TRANSPARENT)
+                    .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                    .min_size(Vec2::new(0.0, CONTROL_HEIGHT));
+
+                    if ui.add(reset_btn).on_hover_text("Clear all filters").clicked() {
                         *filter = FilterCriteria::default();
                         filter_changed = true;
                     }
+                    widgets::toolbar_divider(ui);
+                }
+
+                if widgets::button(ui, widgets::icon_label(icon::DATABASE, "Backup")).on_hover_text("Catalog Backup & Migration").clicked() {
+                    action = Some(TopBarAction::OpenCatalogModal);
+                }
+
+                if widgets::button(ui, widgets::icon_label(icon::FOLDER_OPEN, "Import Folder")).clicked() {
+                    action = Some(TopBarAction::ImportFolder);
+                }
+
+                if widgets::primary_button(ui, widgets::icon_label(icon::FILE_PLUS, "Import Files")).clicked() {
+                    action = Some(TopBarAction::ImportFiles);
                 }
             });
         });

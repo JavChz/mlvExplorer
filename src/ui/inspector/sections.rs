@@ -1,181 +1,61 @@
 use super::types::InspectorAction;
-use crate::db::{Database, PickFlag, VideoRecord};
+use crate::db::{Database, VideoRecord};
 use crate::ui::theme::*;
-use egui::{Color32, RichText, Ui};
+use crate::ui::widgets::{self, icon};
+use egui::{RichText, Sense, Stroke, Ui, Vec2};
 
+/// Clip identity block + rating & flag (always visible at the top of the inspector).
 pub struct OrganizationSection;
 
 impl OrganizationSection {
-    pub fn show(
-        ui: &mut Ui,
-        vid: &mut VideoRecord,
-        db: &Database,
-    ) -> Option<InspectorAction> {
+    pub fn show(ui: &mut Ui, vid: &mut VideoRecord, db: &Database) -> Option<InspectorAction> {
         let mut action = None;
 
-        // Quick Launch MLVApp Button
-        ui.vertical_centered_justified(|ui| {
-            if ui.button(RichText::new("🎬 Open in MLVApp").strong().color(Color32::from_rgb(243, 244, 246)))
-                .on_hover_text("Open this clip directly in MLV App for advanced grading & audio export")
-                .clicked()
-            {
-                action = Some(InspectorAction::OpenInMlvApp);
-            }
-        });
-        ui.add_space(4.0);
+        egui::Frame::none()
+            .inner_margin(egui::Margin { left: PANEL_PADDING, right: PANEL_PADDING, top: 10.0, bottom: 10.0 })
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
 
-        // Section 1: Library Organization (Rating & Flags)
-        ui.group(|ui| {
-            ui.label(RichText::new("ORGANIZATION").strong().size(11.0).color(TEXT_SECONDARY));
-            ui.add_space(4.0);
+                // Clip name + one-line summary
+                ui.add(
+                    egui::Label::new(RichText::new(&vid.file_name).size(FONT_TITLE).strong().color(TEXT_PRIMARY))
+                        .truncate(),
+                );
+                let mut summary = format!("{} × {}  ·  {}", vid.width, vid.height, widgets::format_fps(vid.fps));
+                if !vid.camera_name.is_empty() {
+                    summary = format!("{}  ·  {}", vid.camera_name, summary);
+                }
+                ui.add(egui::Label::new(RichText::new(summary).size(FONT_SMALL).color(TEXT_SECONDARY)).truncate());
+                ui.add_space(8.0);
 
-            // Star Ratings
-            ui.horizontal(|ui| {
-                ui.label("Rating:");
-                for star in 1..=5 {
-                    let is_lit = star <= vid.rating;
-                    let star_str = if is_lit { "★" } else { "☆" };
-                    let star_col = if is_lit { ACCENT_GOLD } else { TEXT_MUTED };
-                    if ui.button(RichText::new(star_str).color(star_col).size(14.0)).clicked() {
-                        let new_r = if vid.rating == star { 0 } else { star };
+                widgets::field_row(ui, "Rating", |ui| {
+                    if let Some(new_r) = widgets::rating_stars(ui, vid.rating, 15.0) {
                         vid.rating = new_r;
                         let _ = db.set_rating(vid.id, new_r);
                         action = Some(InspectorAction::BatchSetRating(new_r));
                     }
-                }
-                if vid.rating > 0 && ui.small_button("Clear").clicked() {
-                    vid.rating = 0;
-                    let _ = db.set_rating(vid.id, 0);
-                    action = Some(InspectorAction::BatchSetRating(0));
-                }
-            });
+                });
 
-            // Pick / Reject Flags
-            ui.horizontal(|ui| {
-                ui.label("Flag:");
-                let is_picked = vid.flag == PickFlag::Picked;
-                if ui.selectable_label(is_picked, RichText::new("🏳 Pick").color(FLAG_PICKED)).clicked() {
-                    let new_flag = if is_picked { PickFlag::Unflagged } else { PickFlag::Picked };
-                    vid.flag = new_flag;
-                    let _ = db.set_flag(vid.id, new_flag);
-                    action = Some(InspectorAction::BatchSetFlag(new_flag));
-                }
-
-                let is_rej = vid.flag == PickFlag::Rejected;
-                if ui.selectable_label(is_rej, RichText::new("❌ Reject").color(FLAG_REJECTED)).clicked() {
-                    let new_flag = if is_rej { PickFlag::Unflagged } else { PickFlag::Rejected };
-                    vid.flag = new_flag;
-                    let _ = db.set_flag(vid.id, new_flag);
-                    action = Some(InspectorAction::BatchSetFlag(new_flag));
-                }
-
-                let is_unf = vid.flag == PickFlag::Unflagged;
-                if ui.selectable_label(is_unf, "⚪ Unflag").clicked() {
-                    vid.flag = PickFlag::Unflagged;
-                    let _ = db.set_flag(vid.id, PickFlag::Unflagged);
-                    action = Some(InspectorAction::BatchSetFlag(PickFlag::Unflagged));
-                }
-            });
-        });
-
-        action
-    }
-}
-
-pub struct TagsSection;
-
-impl TagsSection {
-    pub fn show(
-        ui: &mut Ui,
-        vid: &mut VideoRecord,
-        db: &Database,
-        all_tags: &[String],
-        new_tag_input: &mut String,
-    ) -> Option<InspectorAction> {
-        let mut action = None;
-        ui.group(|ui| {
-            ui.label(RichText::new("TAGS").strong().size(11.0).color(TEXT_SECONDARY));
-            ui.add_space(4.0);
-
-            // Existing tags wrapped
-            ui.horizontal_wrapped(|ui| {
-                let mut to_remove = None;
-                for t in &vid.tags {
-                    ui.horizontal(|ui| {
-                        let pill = RichText::new(format!("#{t}")).color(Color32::from_rgb(96, 165, 250)).size(11.5);
-                        ui.label(pill);
-                        if ui.small_button("×").clicked() {
-                            to_remove = Some(t.clone());
-                        }
-                    });
-                }
-                if let Some(tag_name) = to_remove {
-                    vid.tags.retain(|t| t != &tag_name);
-                    let _ = db.remove_tag(vid.id, &tag_name);
-                    action = Some(InspectorAction::BatchRemoveTag(tag_name));
-                }
-            });
-
-            ui.add_space(4.0);
-
-            // Add tag input
-            ui.horizontal(|ui| {
-                let text_resp = ui.add(
-                    egui::TextEdit::singleline(new_tag_input)
-                        .hint_text("Add tag...")
-                        .desired_width(120.0),
-                );
-                let enter_pressed = text_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if (ui.button("+").clicked() || enter_pressed) && !new_tag_input.trim().is_empty() {
-                    let tag = new_tag_input.trim().to_string();
-                    if !vid.tags.contains(&tag) {
-                        vid.tags.push(tag.clone());
-                        let _ = db.add_tag(vid.id, &tag);
-                        action = Some(InspectorAction::BatchAddTag(tag));
-                    }
-                    new_tag_input.clear();
-                }
-            });
-
-            // Quick suggestions
-            let unused_tags: Vec<&String> = all_tags.iter().filter(|t| !vid.tags.contains(t)).take(6).collect();
-            if !unused_tags.is_empty() {
-                ui.add_space(2.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("Suggestions:").small().color(TEXT_MUTED));
-                    for t in unused_tags {
-                        if ui.small_button(format!("+{t}")).clicked() {
-                            vid.tags.push(t.clone());
-                            let _ = db.add_tag(vid.id, t);
-                            action = Some(InspectorAction::BatchAddTag(t.clone()));
-                        }
+                widgets::field_row(ui, "Flag", |ui| {
+                    if let Some(new_flag) = widgets::flag_buttons(ui, vid.flag, false) {
+                        vid.flag = new_flag;
+                        let _ = db.set_flag(vid.id, new_flag);
+                        action = Some(InspectorAction::BatchSetFlag(new_flag));
                     }
                 });
-            }
-        });
-        action
-    }
-}
 
-pub struct NotesSection;
+                ui.add_space(6.0);
+                let btn = egui::Button::new(widgets::icon_label(icon::ARROW_SQUARE_OUT, "Open in MLV App"))
+                    .min_size(Vec2::new(ui.available_width(), CONTROL_HEIGHT + 2.0));
+                if ui
+                    .add(btn)
+                    .on_hover_text("Open this clip in MLV App for grading and export")
+                    .clicked()
+                {
+                    action = Some(InspectorAction::OpenInMlvApp);
+                }
+            });
 
-impl NotesSection {
-    pub fn show(ui: &mut Ui, vid: &mut VideoRecord, db: &Database) -> Option<InspectorAction> {
-        let mut action = None;
-        ui.group(|ui| {
-            ui.label(RichText::new("NOTES").strong().size(11.0).color(TEXT_SECONDARY));
-            ui.add_space(4.0);
-            let response = ui.add(
-                egui::TextEdit::multiline(&mut vid.notes)
-                    .desired_rows(3)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("Add clip notes, director comments..."),
-            );
-            if response.changed() {
-                let _ = db.set_notes(vid.id, &vid.notes);
-                action = Some(InspectorAction::BatchSetNotes(vid.notes.clone()));
-            }
-        });
         action
     }
 }
@@ -185,64 +65,15 @@ pub struct ProductionSlateSection;
 impl ProductionSlateSection {
     pub fn show(ui: &mut Ui, vid: &mut VideoRecord, db: &Database) -> Option<InspectorAction> {
         let mut action = None;
-        ui.group(|ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("🎬 PRODUCTION SLATE").strong().size(11.0).color(Color32::from_rgb(245, 158, 11)));
-                if let Some(slate) = vid.slate_label() {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new(slate).small().color(Color32::from_rgb(147, 197, 253)));
-                    });
-                }
-            });
-            ui.add_space(4.0);
+        let trailing = vid.slate_label().map(|s| RichText::new(s).size(FONT_CAPTION).color(TEXT_MUTED).into());
 
+        widgets::section(ui, "Slate", true, trailing, |ui| {
             let mut changed = false;
-
-            // Row 1: Scene & Shot
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Scene:").small().color(TEXT_SECONDARY));
-                let mut scene = vid.scene.clone().unwrap_or_default();
-                if ui.add_sized([64.0, 18.0], egui::TextEdit::singleline(&mut scene).hint_text("12A")).changed() {
-                    vid.scene = if scene.trim().is_empty() { None } else { Some(scene) };
-                    changed = true;
-                }
-
-                ui.add_space(6.0);
-                ui.label(RichText::new("Shot:").small().color(TEXT_SECONDARY));
-                let mut shot = vid.shot.clone().unwrap_or_default();
-                if ui.add_sized([54.0, 18.0], egui::TextEdit::singleline(&mut shot).hint_text("2")).changed() {
-                    vid.shot = if shot.trim().is_empty() { None } else { Some(shot) };
-                    changed = true;
-                }
-            });
-
-            // Row 2: Take & Unit / Camera
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Take:").small().color(TEXT_SECONDARY));
-                let mut take = vid.take.clone().unwrap_or_default();
-                if ui.add_sized([64.0, 18.0], egui::TextEdit::singleline(&mut take).hint_text("1")).changed() {
-                    vid.take = if take.trim().is_empty() { None } else { Some(take) };
-                    changed = true;
-                }
-
-                ui.add_space(6.0);
-                ui.label(RichText::new("Unit:").small().color(TEXT_SECONDARY));
-                let mut unit = vid.camera_unit.clone().unwrap_or_default();
-                if ui.add_sized([54.0, 18.0], egui::TextEdit::singleline(&mut unit).hint_text("A-Cam")).changed() {
-                    vid.camera_unit = if unit.trim().is_empty() { None } else { Some(unit) };
-                    changed = true;
-                }
-            });
-
-            // Row 3: Location
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Location:").small().color(TEXT_SECONDARY));
-                let mut loc = vid.location.clone().unwrap_or_default();
-                if ui.add(egui::TextEdit::singleline(&mut loc).hint_text("Stage B / Exterior Woods").desired_width(f32::INFINITY)).changed() {
-                    vid.location = if loc.trim().is_empty() { None } else { Some(loc) };
-                    changed = true;
-                }
-            });
+            changed |= widgets::field_row(ui, "Scene", |ui| widgets::optional_text_field(ui, &mut vid.scene, "e.g. 12A"));
+            changed |= widgets::field_row(ui, "Shot", |ui| widgets::optional_text_field(ui, &mut vid.shot, "e.g. 3"));
+            changed |= widgets::field_row(ui, "Take", |ui| widgets::optional_text_field(ui, &mut vid.take, "e.g. 1"));
+            changed |= widgets::field_row(ui, "Camera #", |ui| widgets::optional_text_field(ui, &mut vid.camera_unit, "e.g. A"));
+            changed |= widgets::field_row(ui, "Location", |ui| widgets::optional_text_field(ui, &mut vid.location, "e.g. Stage B"));
 
             if changed {
                 let _ = db.set_production_slate(
@@ -260,6 +91,146 @@ impl ProductionSlateSection {
                     location: vid.location.clone(),
                     camera_unit: vid.camera_unit.clone(),
                 });
+            }
+        });
+        action
+    }
+}
+
+/// Keyword chip with a remove affordance. Returns true when remove was clicked.
+fn keyword_chip(ui: &mut Ui, text: &str) -> bool {
+    let mut removed = false;
+    egui::Frame::none()
+        .fill(BG_SECTION)
+        .stroke(Stroke::new(1.0_f32, BORDER_STRONG))
+        .rounding(egui::Rounding::same(10.0))
+        .inner_margin(egui::Margin { left: 8.0, right: 5.0, top: 2.0, bottom: 2.0 })
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(text).size(FONT_SMALL).color(TEXT_PRIMARY));
+                let x = ui
+                    .add(egui::Label::new(RichText::new(icon::X).size(10.0).color(TEXT_MUTED)).sense(Sense::click()))
+                    .on_hover_text("Remove keyword");
+                if x.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if x.clicked() {
+                    removed = true;
+                }
+            });
+        });
+    removed
+}
+
+pub struct TagsSection;
+
+impl TagsSection {
+    pub fn show(
+        ui: &mut Ui,
+        vid: &mut VideoRecord,
+        db: &Database,
+        all_tags: &[String],
+        new_tag_input: &mut String,
+    ) -> Option<InspectorAction> {
+        let mut action = None;
+        let trailing = (!vid.tags.is_empty())
+            .then(|| RichText::new(vid.tags.len().to_string()).size(FONT_CAPTION).color(TEXT_MUTED).into());
+
+        widgets::section(ui, "Keywords", true, trailing, |ui| {
+            // Existing keywords
+            if !vid.tags.is_empty() {
+                let mut to_remove = None;
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                    for t in &vid.tags {
+                        if keyword_chip(ui, t) {
+                            to_remove = Some(t.clone());
+                        }
+                    }
+                });
+                if let Some(tag_name) = to_remove {
+                    vid.tags.retain(|t| t != &tag_name);
+                    let _ = db.remove_tag(vid.id, &tag_name);
+                    action = Some(InspectorAction::BatchRemoveTag(tag_name));
+                }
+                ui.add_space(6.0);
+            }
+
+            // Add keyword input (Enter to commit)
+            let mut commit = false;
+            ui.horizontal(|ui| {
+                let add_w = CONTROL_HEIGHT + 2.0;
+                let resp = ui.add_sized(
+                    [ui.available_width() - add_w - ui.spacing().item_spacing.x, CONTROL_HEIGHT],
+                    egui::TextEdit::singleline(new_tag_input)
+                        .hint_text(widgets::hint("Add keyword…"))
+                        .margin(egui::vec2(6.0, 3.0)),
+                );
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    commit = true;
+                    resp.request_focus();
+                }
+                let can_add = !new_tag_input.trim().is_empty();
+                ui.add_enabled_ui(can_add, |ui| {
+                    if widgets::icon_button(ui, icon::PLUS, false, "Add keyword [Enter]").clicked() {
+                        commit = true;
+                    }
+                });
+            });
+            if commit && !new_tag_input.trim().is_empty() {
+                let tag = new_tag_input.trim().to_string();
+                if !vid.tags.contains(&tag) {
+                    vid.tags.push(tag.clone());
+                    let _ = db.add_tag(vid.id, &tag);
+                    action = Some(InspectorAction::BatchAddTag(tag));
+                }
+                new_tag_input.clear();
+            }
+
+            // Recently used keywords (quick add)
+            let unused: Vec<&String> = all_tags.iter().filter(|t| !vid.tags.contains(t)).take(8).collect();
+            if !unused.is_empty() {
+                ui.add_space(6.0);
+                ui.label(RichText::new("Recent").size(FONT_CAPTION).color(TEXT_MUTED));
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                    for t in unused {
+                        let b = egui::Button::new(
+                            RichText::new(format!("{} {}", icon::PLUS, t)).size(FONT_SMALL).color(TEXT_SECONDARY),
+                        )
+                        .fill(egui::Color32::TRANSPARENT)
+                        .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                        .rounding(egui::Rounding::same(10.0));
+                        if ui.add(b).clicked() {
+                            vid.tags.push(t.clone());
+                            let _ = db.add_tag(vid.id, t);
+                            action = Some(InspectorAction::BatchAddTag(t.clone()));
+                        }
+                    }
+                });
+            }
+        });
+        action
+    }
+}
+
+pub struct NotesSection;
+
+impl NotesSection {
+    pub fn show(ui: &mut Ui, vid: &mut VideoRecord, db: &Database) -> Option<InspectorAction> {
+        let mut action = None;
+        widgets::section(ui, "Notes", true, None, |ui| {
+            let response = ui.add(
+                egui::TextEdit::multiline(&mut vid.notes)
+                    .desired_rows(3)
+                    .desired_width(f32::INFINITY)
+                    .margin(egui::vec2(6.0, 4.0))
+                    .hint_text(widgets::hint("Add notes or comments…")),
+            );
+            if response.changed() {
+                let _ = db.set_notes(vid.id, &vid.notes);
+                action = Some(InspectorAction::BatchSetNotes(vid.notes.clone()));
             }
         });
         action

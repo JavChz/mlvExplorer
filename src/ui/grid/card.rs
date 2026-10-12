@@ -2,7 +2,8 @@ use super::types::GridAction;
 use crate::db::{PickFlag, VideoRecord};
 use crate::thumbnails::ThumbnailManager;
 use crate::ui::theme::*;
-use egui::{Color32, Pos2, Rect, Rounding, Stroke, Ui, Vec2};
+use crate::ui::widgets::{self, icon};
+use egui::{Align2, Color32, FontId, Pos2, Rect, Rounding, Stroke, Ui, Vec2};
 
 pub struct Card;
 
@@ -37,8 +38,6 @@ impl Card {
             action = Some(GridAction::OpenPlayer(index));
         }
 
-        // When right-clicked on an unselected item, the delete action targets this item.
-        // If right-clicked on an already-selected item, it targets all currently selected items.
         let target_indices = if is_selected && selected_indices.len() > 1 {
             selected_indices.to_vec()
         } else {
@@ -46,16 +45,21 @@ impl Card {
         };
 
         response.context_menu(|ui| {
-            if ui.button("▶ Open in Player").clicked() {
+            if ui.button(widgets::icon_label(icon::PLAY, "Open in Player")).clicked() {
                 action = Some(GridAction::OpenPlayer(index));
                 ui.close_menu();
             }
-            if ui.button("🎬 Open in MLVApp").clicked() {
+            if ui.button(widgets::icon_label(icon::ARROW_SQUARE_OUT, "Open in MLV App")).clicked() {
                 action = Some(GridAction::OpenInMlvApp(index));
                 ui.close_menu();
             }
             ui.separator();
-            if ui.button(if vid.flag == PickFlag::Picked { "🏳 Remove Pick" } else { "🏳 Pick" }).clicked() {
+            let (pick_icon, pick_text) = if vid.flag == PickFlag::Picked {
+                (icon::X, "Remove Pick Flag")
+            } else {
+                (icon::FLAG, "Flag as Pick")
+            };
+            if ui.button(widgets::icon_label(pick_icon, pick_text)).clicked() {
                 action = Some(GridAction::TogglePick(vid.id));
                 ui.close_menu();
             }
@@ -65,13 +69,13 @@ impl Card {
             } else {
                 String::new()
             };
-            if ui.button(format!("🗑 Remove from Catalog{}", count_label)).clicked() {
+            if ui.button(widgets::icon_label(icon::PROHIBIT, &format!("Remove from Catalog{}", count_label))).clicked() {
                 action = Some(GridAction::RequestRemoveFromCatalog(target_indices.clone()));
                 ui.close_menu();
             }
             if ui.button(
-                egui::RichText::new(format!("⚠️ Move to Trash{}", count_label))
-                    .color(Color32::from_rgb(240, 100, 100))
+                egui::RichText::new(widgets::icon_label(icon::TRASH, &format!("Move to Trash{}", count_label)))
+                    .color(FLAG_REJECTED)
             ).clicked() {
                 action = Some(GridAction::RequestMoveToTrash(target_indices.clone()));
                 ui.close_menu();
@@ -90,12 +94,14 @@ impl Card {
         };
 
         let border_stroke = if is_selected {
-            Stroke::new(2.0_f32, BORDER_SELECTED)
+            Stroke::new(1.5_f32, BORDER_SELECTED)
+        } else if response.hovered() {
+            Stroke::new(1.0_f32, BORDER_STRONG)
         } else {
             Stroke::new(1.0_f32, BORDER_SUBTLE)
         };
 
-        painter.rect(rect, Rounding::same(6.0), bg_color, border_stroke);
+        painter.rect(rect, Rounding::same(ROUNDING + 1.0), bg_color, border_stroke);
 
         // 1. Thumbnail Area
         let thumb_rect = Rect::from_min_size(
@@ -123,10 +129,10 @@ impl Card {
             }
             let fitted_rect = Rect::from_center_size(thumb_rect.center(), Vec2::new(fit_w, fit_h));
 
-            // Dark background for pillarbox/letterbox
-            painter.rect_filled(thumb_rect, Rounding::same(4.0), Color32::from_rgb(10, 10, 14));
+            // Letterbox background
+            painter.rect_filled(thumb_rect, Rounding::same(ROUNDING), BG_THUMB);
 
-            // Paint real MLV frame 0 decoded thumbnail fitted & de-squeezed
+            // Paint thumbnail
             painter.image(
                 tex.id(),
                 fitted_rect,
@@ -134,156 +140,148 @@ impl Card {
                 Color32::WHITE,
             );
         } else {
-            // Dark slate placeholder while decoding
-            painter.rect_filled(thumb_rect, Rounding::same(4.0), Color32::from_rgb(18, 18, 22));
+            painter.rect_filled(thumb_rect, Rounding::same(ROUNDING), BG_FIELD);
             painter.text(
                 thumb_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "⏳ Loading RAW...",
-                egui::FontId::proportional(12.0),
+                Align2::CENTER_CENTER,
+                format!("{}  Loading…", icon::SPINNER_GAP),
+                FontId::proportional(FONT_SMALL),
                 TEXT_MUTED,
             );
         }
 
         // 2. Badges over thumbnail
-        // Duration pill (bottom-right)
+        // Duration badge (bottom-right)
         let dur_str = vid.duration_tc();
-        let badge_w = 54.0;
-        let badge_rect = Rect::from_min_size(
-            Pos2::new(thumb_rect.max.x - badge_w - 4.0, thumb_rect.max.y - 18.0),
-            Vec2::new(badge_w, 15.0),
-        );
-        painter.rect_filled(badge_rect, Rounding::same(3.0), Color32::from_black_alpha(200));
-        painter.text(
-            badge_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            dur_str,
-            egui::FontId::monospace(9.5),
+        widgets::paint_badge(
+            painter,
+            Pos2::new(thumb_rect.max.x - 4.0, thumb_rect.max.y - 4.0),
+            Align2::RIGHT_BOTTOM,
+            &dur_str,
+            FontId::monospace(9.5),
             TEXT_PRIMARY,
+            Color32::from_black_alpha(190),
         );
 
-        // Codec / Bit-depth pill (bottom-left)
+        // Bit-depth & audio badge (bottom-left)
         let bpp_str = if vid.has_audio {
             format!("{}-bit · 🔊", vid.bits_per_pixel)
         } else {
             format!("{}-bit", vid.bits_per_pixel)
         };
-        let bpp_w = if vid.has_audio { 52.0 } else { 38.0 };
-        let bpp_rect = Rect::from_min_size(
-            Pos2::new(thumb_rect.min.x + 4.0, thumb_rect.max.y - 18.0),
-            Vec2::new(bpp_w, 15.0),
-        );
-        painter.rect_filled(bpp_rect, Rounding::same(3.0), Color32::from_black_alpha(200));
-        painter.text(
-            bpp_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            bpp_str,
-            egui::FontId::proportional(9.5),
-            Color32::from_rgb(147, 197, 253),
+        widgets::paint_badge(
+            painter,
+            Pos2::new(thumb_rect.min.x + 4.0, thumb_rect.max.y - 4.0),
+            Align2::LEFT_BOTTOM,
+            &bpp_str,
+            FontId::proportional(9.5),
+            TEXT_SECONDARY,
+            Color32::from_black_alpha(190),
         );
 
-        // Pick / Flag Icon (top-left)
+        // Pick / Reject Flag Icon (top-left)
         if vid.flag != PickFlag::Unflagged {
             let (flag_icon, flag_color) = match vid.flag {
-                PickFlag::Picked => ("🏳", FLAG_PICKED),
-                PickFlag::Rejected => ("❌", FLAG_REJECTED),
+                PickFlag::Picked => (icon::FLAG, FLAG_PICKED),
+                PickFlag::Rejected => (icon::X_CIRCLE, FLAG_REJECTED),
                 PickFlag::Unflagged => ("", Color32::TRANSPARENT),
             };
-            let flag_rect = Rect::from_min_size(
+            let flag_badge = Rect::from_min_size(
                 thumb_rect.min + Vec2::new(4.0, 4.0),
-                Vec2::new(18.0, 18.0),
+                Vec2::new(20.0, 20.0),
             );
-            painter.rect_filled(flag_rect, Rounding::same(3.0), Color32::from_black_alpha(180));
+            painter.rect_filled(flag_badge, Rounding::same(ROUNDING), Color32::from_black_alpha(200));
             painter.text(
-                flag_rect.center(),
-                egui::Align2::CENTER_CENTER,
+                flag_badge.center(),
+                Align2::CENTER_CENTER,
                 flag_icon,
-                egui::FontId::proportional(11.0),
+                icon_fill_font(12.0),
                 flag_color,
             );
         }
 
         // Dual Card / Spanned Pill (top-right)
         if vid.chunk_count > 1 {
-            let span_rect = Rect::from_min_size(
-                Pos2::new(thumb_rect.max.x - 52.0, thumb_rect.min.y + 4.0),
-                Vec2::new(48.0, 15.0),
+            let span_str = if card_w >= 240.0 {
+                format!("{} Spanned ({})", icon::STACK, vid.chunk_count)
+            } else {
+                format!("{} Spanned", icon::STACK)
+            };
+            let badge_rect = widgets::paint_badge(
+                painter,
+                Pos2::new(thumb_rect.max.x - 4.0, thumb_rect.min.y + 4.0),
+                Align2::RIGHT_TOP,
+                &span_str,
+                FontId::proportional(10.0),
+                Color32::WHITE,
+                Color32::from_black_alpha(200),
             );
-            painter.rect_filled(span_rect, Rounding::same(3.0), Color32::from_rgb(245, 158, 11));
-            painter.text(
-                span_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                format!("⚡ {}x", vid.chunk_count),
-                egui::FontId::proportional(9.5),
-                Color32::BLACK,
-            );
+            // Interactive tooltip explaining spanned media
+            let span_resp = ui.interact(badge_rect, ui.id().with(("spanned_tip", vid.id)), egui::Sense::hover());
+            span_resp.on_hover_text(format!(
+                "Card-spanned footage ({} split files: .MLV, .M00…)\nRecorded across multiple cards/chunks and seamlessly joined.",
+                vid.chunk_count
+            ));
         }
 
         // 3. Card Footer (File metadata & rating)
         let mut cursor_y = thumb_rect.max.y + 6.0;
 
-        // Filename
-        let fname_clipped = if vid.file_name.len() > 26 {
-            format!("{}...", &vid.file_name[..23])
-        } else {
-            vid.file_name.clone()
-        };
+        // Filename (elided safely)
+        let max_text_w = card_w - 16.0;
+        let fname_font = FontId::proportional(FONT_BODY);
+        let elided_fname = widgets::elide(ui, &vid.file_name, &fname_font, max_text_w);
         painter.text(
             Pos2::new(rect.min.x + 8.0, cursor_y),
-            egui::Align2::LEFT_TOP,
-            fname_clipped,
-            egui::FontId::proportional(12.5),
+            Align2::LEFT_TOP,
+            elided_fname,
+            fname_font,
             TEXT_PRIMARY,
         );
         cursor_y += 18.0;
 
         // Camera & Specs Line
         let specs_str = format!("{} · {}p · {:.0}fps", vid.camera_name, vid.height, vid.fps);
-        let specs_clipped = if specs_str.len() > 30 {
-            format!("{}...", &specs_str[..27])
-        } else {
-            specs_str
-        };
+        let specs_font = FontId::proportional(FONT_CAPTION);
+        let elided_specs = widgets::elide(ui, &specs_str, &specs_font, max_text_w);
         painter.text(
             Pos2::new(rect.min.x + 8.0, cursor_y),
-            egui::Align2::LEFT_TOP,
-            specs_clipped,
-            egui::FontId::proportional(10.5),
+            Align2::LEFT_TOP,
+            elided_specs,
+            specs_font,
             TEXT_MUTED,
         );
         cursor_y += 16.0;
 
-        // Star ratings (★) clickable or interactive
-        let mut star_x = rect.min.x + 8.0;
-        for s in 1..=5 {
-            let is_lit = s <= vid.rating;
-            let star_char = if is_lit { "★" } else { "☆" };
-            let star_col = if is_lit { ACCENT_GOLD } else { TEXT_MUTED };
+        // Star ratings (★) interactive clickable row
+        let star_rects = widgets::paint_stars(
+            painter,
+            Pos2::new(rect.min.x + 8.0, cursor_y + 6.0),
+            vid.rating,
+            12.0,
+            2.0,
+        );
 
-            let star_rect = Rect::from_min_size(Pos2::new(star_x, cursor_y), Vec2::new(14.0, 14.0));
-            if ui.rect_contains_pointer(star_rect) && ui.input(|inp| inp.pointer.primary_clicked()) {
-                let new_r = if vid.rating == s { 0 } else { s };
+        for (s_idx, s_rect) in star_rects.iter().enumerate() {
+            if ui.rect_contains_pointer(*s_rect) && ui.input(|inp| inp.pointer.primary_clicked()) {
+                let star = (s_idx + 1) as u8;
+                let new_r = if vid.rating == star { 0 } else { star };
                 action = Some(GridAction::SetRating(vid.id, new_r));
             }
-
-            painter.text(
-                star_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                star_char,
-                egui::FontId::proportional(13.0),
-                star_col,
-            );
-            star_x += 16.0;
         }
 
-        // Production Slate Label (e.g. 🎬 Sc 12 · Sh 1 · Tk 3)
+        // Production Slate Label (e.g. Sc 12 · Sh 1 · Tk 3)
         if let Some(slate) = vid.slate_label() {
+            let slate_font = FontId::proportional(FONT_CAPTION);
+            let slate_str = format!("{} {}", icon::FILM_STRIP, slate);
+            let max_slate_w = (rect.max.x - 8.0) - (rect.min.x + 8.0 + 72.0);
+            let elided_slate = widgets::elide(ui, &slate_str, &slate_font, max_slate_w);
             painter.text(
-                Pos2::new(rect.max.x - 8.0, cursor_y + 1.0),
-                egui::Align2::RIGHT_TOP,
-                format!("🎬 {}", slate),
-                egui::FontId::proportional(10.5),
-                Color32::from_rgb(245, 158, 11),
+                Pos2::new(rect.max.x - 8.0, cursor_y + 6.0),
+                Align2::RIGHT_CENTER,
+                elided_slate,
+                slate_font,
+                WARNING,
             );
         }
 

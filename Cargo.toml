@@ -17,6 +17,7 @@ eframe = { version = "0.29", default-features = false, features = [
     "x11",
 ] }
 egui = "0.29"
+egui-phosphor = { version = "0.7.3", default-features = false, features = ["regular", "fill"] }
 bytemuck = { version = "1.16", features = ["derive"] }
 
 # Database

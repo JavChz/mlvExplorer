@@ -1,9 +1,10 @@
 use super::types::{PlayerAction, PlayerView};
-use crate::db::{PickFlag, VideoRecord};
+use crate::db::VideoRecord;
 use crate::playback::Playback;
 use crate::ui::playbar::Playbar;
 use crate::ui::theme::*;
-use egui::{Color32, RichText, Ui};
+use crate::ui::widgets::{self, icon};
+use egui::{Color32, RichText, Rounding, Stroke, Ui, Vec2};
 use std::time::Instant;
 
 pub struct TransportBar;
@@ -18,205 +19,186 @@ impl TransportBar {
     ) -> Option<PlayerAction> {
         let mut action = None;
 
-        ui.group(|ui| {
-            // A. Full-Width Professional Scrubber Playbar
-            let cached_frames = playback.cached_frames();
-            if let Some(new_frame) = Playbar::show(
-                ui,
-                "player_main_playbar",
-                view.current_frame,
-                total_frames,
-                video.fps,
-                &cached_frames,
-            ) {
-                view.current_frame = new_frame;
-                action = Some(PlayerAction::Seek(view.current_frame));
-            }
-
-            ui.add_space(4.0);
-
-            // B. Transport Controls Row
-            ui.horizontal(|ui| {
-                // Left: Timecode Readout & Frame Counter
-                let cur_time = if video.fps > 0.0 {
-                    view.current_frame as f32 / video.fps
-                } else {
-                    0.0
-                };
-                let cm = (cur_time / 60.0) as u32;
-                let cs = (cur_time % 60.0) as u32;
-                let cf = (view.current_frame % (video.fps as usize).max(1)) as u32;
-
-                let tot_time = video.duration_seconds;
-                let tm = (tot_time / 60.0) as u32;
-                let ts = (tot_time % 60.0) as u32;
-
-                ui.label(
-                    RichText::new(format!("{:02}:{:02}:{:02}", cm, cs, cf))
-                        .monospace()
-                        .strong()
-                        .size(14.0)
-                        .color(Color32::WHITE),
-                );
-                ui.label(
-                    RichText::new(format!("/ {:02}:{:02}", tm, ts))
-                        .monospace()
-                        .size(11.5)
-                        .color(TEXT_MUTED),
-                );
-                ui.label(
-                    RichText::new(format!("[{}/{}]", view.current_frame + 1, total_frames))
-                        .monospace()
-                        .small()
-                        .color(TEXT_SECONDARY),
-                );
-
-                ui.add_space(20.0);
-
-                // Center: Transport Buttons
-                // Jump to Start
-                if ui.button(RichText::new("⏮").size(13.0)).on_hover_text("Jump to Start [Home]").clicked() {
-                    view.current_frame = 0;
-                    action = Some(PlayerAction::Seek(0));
-                }
-
-                // Step -1 Frame
-                if ui.button(RichText::new("◀").size(13.0)).on_hover_text("Step -1 Frame [Left Arrow]").clicked() {
-                    if view.current_frame > 0 {
-                        view.current_frame -= 1;
-                        action = Some(PlayerAction::Seek(view.current_frame));
-                    }
-                }
-
-                // PLAY / PAUSE (Prominent Studio Button)
-                let play_icon = if view.is_playing { " ⏸ PAUSE " } else { " ▶ PLAY  " };
-                let play_bg = if view.is_playing {
-                    Color32::from_rgb(59, 130, 246)
-                } else {
-                    Color32::from_rgb(38, 42, 52)
-                };
-                let play_btn = egui::Button::new(RichText::new(play_icon).strong().size(13.0).color(Color32::WHITE))
-                    .fill(play_bg);
-
-                if ui.add(play_btn).on_hover_text("Play / Pause [Space]").clicked() {
-                    view.is_playing = !view.is_playing;
-                    view.last_frame_time = Instant::now();
-                    let time_sec = view.current_frame as f32 / video.fps.max(1.0);
-                    if let Ok(mut a) = playback.audio.lock() {
-                        if view.is_playing {
-                            a.play(time_sec);
-                        } else {
-                            a.pause();
-                        }
-                    }
-                }
-
-                // Step +1 Frame
-                if ui.button(RichText::new("▶").size(13.0)).on_hover_text("Step +1 Frame [Right Arrow]").clicked() {
-                    if view.current_frame + 1 < total_frames {
-                        view.current_frame += 1;
-                        action = Some(PlayerAction::Seek(view.current_frame));
-                    }
-                }
-
-                // Jump to End
-                if ui.button(RichText::new("⏭").size(13.0)).on_hover_text("Jump to End [End]").clicked() {
-                    view.current_frame = total_frames.saturating_sub(1);
+        egui::Frame::none()
+            .fill(BG_PANEL)
+            .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+            .show(ui, |ui| {
+                // A. Scrubber Playbar
+                let cached_frames = playback.cached_frames();
+                if let Some(new_frame) = Playbar::show(
+                    ui,
+                    "player_main_playbar",
+                    view.current_frame,
+                    total_frames,
+                    video.fps,
+                    &cached_frames,
+                ) {
+                    view.current_frame = new_frame;
                     action = Some(PlayerAction::Seek(view.current_frame));
                 }
 
-                ui.separator();
+                ui.add_space(2.0);
 
-                // Loop Toggle
-                let loop_col = if view.is_looping {
-                    ACCENT_BLUE
-                } else {
-                    TEXT_MUTED
-                };
-                if ui
-                    .selectable_label(view.is_looping, RichText::new("🔁 Loop").color(loop_col))
-                    .clicked()
-                {
-                    view.is_looping = !view.is_looping;
-                }
+                // B. Transport Controls Row
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
 
-                // Speed Selector Pills (0.5x, 1x, 2x, 4x)
-                ui.separator();
-                ui.label(RichText::new("Speed:").small().color(TEXT_SECONDARY));
-                for spd in [0.5, 1.0, 2.0, 4.0] {
-                    let is_active = (view.playback_speed - spd).abs() < 0.05;
-                    if ui.selectable_label(is_active, format!("{}x", spd)).clicked() {
-                        view.playback_speed = spd;
+                    // Left: Timecode Readout & Frame Counter
+                    let tc_cur = widgets::timecode(view.current_frame, video.fps);
+                    let tc_tot = widgets::timecode(total_frames, video.fps);
+
+                    ui.label(
+                        RichText::new(tc_cur)
+                            .monospace()
+                            .strong()
+                            .size(13.5)
+                            .color(Color32::WHITE),
+                    );
+                    ui.label(
+                        RichText::new(format!("/  {}", tc_tot))
+                            .monospace()
+                            .size(FONT_SMALL)
+                            .color(TEXT_MUTED),
+                    );
+                    ui.label(
+                        RichText::new(format!("[{}/{}]", view.current_frame + 1, total_frames))
+                            .monospace()
+                            .size(FONT_CAPTION)
+                            .color(TEXT_SECONDARY),
+                    );
+
+                    ui.add_space(12.0);
+                    widgets::toolbar_divider(ui);
+
+                    // Center: Transport Buttons
+                    // Jump to Start
+                    if widgets::icon_button(ui, icon::SKIP_BACK, false, "Jump to Start [Home]").clicked() {
+                        view.current_frame = 0;
+                        action = Some(PlayerAction::Seek(0));
                     }
-                }
 
-                // Audio Volume & Mute Controls
-                ui.separator();
-                let has_audio = playback.audio.lock().map(|a| a.has_audio()).unwrap_or(false);
-                if has_audio {
-                    let mute_icon = if view.is_muted || view.volume == 0.0 { "🔇" } else if view.volume < 0.5 { "🔉" } else { "🔊" };
-                    if ui.small_button(mute_icon).on_hover_text("Toggle Mute").clicked() {
-                        view.is_muted = !view.is_muted;
+                    // Step -1 Frame
+                    if widgets::icon_button(ui, icon::CARET_LEFT, false, "Step -1 Frame [Left Arrow]").clicked() {
+                        if view.current_frame > 0 {
+                            view.current_frame -= 1;
+                            action = Some(PlayerAction::Seek(view.current_frame));
+                        }
+                    }
+
+                    // PLAY / PAUSE (Main Button)
+                    let play_glyph = if view.is_playing { icon::PAUSE } else { icon::PLAY };
+                    let play_tip = if view.is_playing { "Pause [Space]" } else { "Play [Space]" };
+                    let play_btn = egui::Button::new(
+                        RichText::new(play_glyph)
+                            .size(15.0)
+                            .color(Color32::WHITE),
+                    )
+                    .fill(if view.is_playing { ACCENT } else { BG_CARD })
+                    .stroke(if view.is_playing { Stroke::new(1.0_f32, ACCENT_HOVER) } else { Stroke::new(1.0_f32, BORDER_SUBTLE) })
+                    .rounding(Rounding::same(ROUNDING))
+                    .min_size(Vec2::new(32.0, CONTROL_HEIGHT));
+
+                    if ui.add(play_btn).on_hover_text(play_tip).clicked() {
+                        view.is_playing = !view.is_playing;
+                        view.last_frame_time = Instant::now();
+                        let time_sec = view.current_frame as f32 / video.fps.max(1.0);
                         if let Ok(mut a) = playback.audio.lock() {
-                            a.set_muted(view.is_muted);
+                            if view.is_playing {
+                                a.play(time_sec);
+                            } else {
+                                a.pause();
+                            }
                         }
                     }
 
-                    let mut vol = view.volume;
-                    if ui.add_sized([64.0, 18.0], egui::Slider::new(&mut vol, 0.0..=1.0).show_value(false))
-                        .on_hover_text(format!("Audio Volume: {}%", (view.volume * 100.0).round()))
-                        .changed()
-                    {
-                        view.volume = vol;
-                        if view.is_muted && vol > 0.0 {
-                            view.is_muted = false;
-                        }
-                        if let Ok(mut a) = playback.audio.lock() {
-                            a.set_volume(view.volume);
-                            a.set_muted(view.is_muted);
+                    // Step +1 Frame
+                    if widgets::icon_button(ui, icon::CARET_RIGHT, false, "Step +1 Frame [Right Arrow]").clicked() {
+                        if view.current_frame + 1 < total_frames {
+                            view.current_frame += 1;
+                            action = Some(PlayerAction::Seek(view.current_frame));
                         }
                     }
 
-                    if let Ok(a) = playback.audio.lock() {
-                        if let Some(info) = a.audio_info() {
-                            ui.label(RichText::new(info).size(10.0).color(Color32::from_rgb(147, 197, 253)));
+                    // Jump to End
+                    if widgets::icon_button(ui, icon::SKIP_FORWARD, false, "Jump to End [End]").clicked() {
+                        view.current_frame = total_frames.saturating_sub(1);
+                        action = Some(PlayerAction::Seek(view.current_frame));
+                    }
+
+                    widgets::toolbar_divider(ui);
+
+                    // Loop Toggle
+                    if widgets::icon_button(ui, icon::REPEAT, view.is_looping, "Toggle Loop").clicked() {
+                        view.is_looping = !view.is_looping;
+                    }
+
+                    widgets::toolbar_divider(ui);
+
+                    // Speed Selector Pills
+                    ui.label(RichText::new("Speed:").size(FONT_SMALL).color(TEXT_MUTED));
+                    for spd in [0.5, 1.0, 2.0, 4.0] {
+                        let is_active = (view.playback_speed - spd).abs() < 0.05;
+                        if widgets::toggle_button(ui, is_active, format!("{}x", spd)).clicked() {
+                            view.playback_speed = spd;
                         }
                     }
-                } else {
-                    ui.label(RichText::new("🔇 No Audio Track").size(10.0).color(TEXT_MUTED));
-                }
 
-                // Right side: Quick Rating & Pick buttons on player bar!
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Pick / Reject Flags
-                    let is_pick = video.flag == PickFlag::Picked;
-                    if ui.selectable_label(is_pick, RichText::new("🏳 Pick [P]").color(FLAG_PICKED)).clicked() {
-                        let new_flag = if is_pick { PickFlag::Unflagged } else { PickFlag::Picked };
-                        action = Some(PlayerAction::SetFlag(new_flag));
+                    widgets::toolbar_divider(ui);
+
+                    // Audio Volume & Mute Controls
+                    let has_audio = playback.audio.lock().map(|a| a.has_audio()).unwrap_or(false);
+                    if has_audio {
+                        let mute_glyph = if view.is_muted || view.volume == 0.0 {
+                            icon::SPEAKER_SLASH
+                        } else if view.volume < 0.5 {
+                            icon::SPEAKER_LOW
+                        } else {
+                            icon::SPEAKER_HIGH
+                        };
+
+                        if widgets::icon_button(ui, mute_glyph, view.is_muted, "Toggle Audio Mute").clicked() {
+                            view.is_muted = !view.is_muted;
+                            if let Ok(mut a) = playback.audio.lock() {
+                                a.set_muted(view.is_muted);
+                            }
+                        }
+
+                        let mut vol = view.volume;
+                        if ui.add_sized([64.0, 18.0], egui::Slider::new(&mut vol, 0.0..=1.0).show_value(false))
+                            .on_hover_text(format!("Audio Volume: {}%", (view.volume * 100.0).round()))
+                            .changed()
+                        {
+                            view.volume = vol;
+                            if view.is_muted && vol > 0.0 {
+                                view.is_muted = false;
+                            }
+                            if let Ok(mut a) = playback.audio.lock() {
+                                a.set_volume(view.volume);
+                                a.set_muted(view.is_muted);
+                            }
+                        }
+                    } else {
+                        ui.label(RichText::new("No Audio").size(FONT_CAPTION).color(TEXT_MUTED));
                     }
 
-                    let is_rej = video.flag == PickFlag::Rejected;
-                    if ui.selectable_label(is_rej, RichText::new("❌ Reject [X]").color(FLAG_REJECTED)).clicked() {
-                        let new_flag = if is_rej { PickFlag::Unflagged } else { PickFlag::Rejected };
-                        action = Some(PlayerAction::SetFlag(new_flag));
-                    }
+                    // Right side: Quick Rating & Pick buttons on player bar!
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(4.0);
 
-                    ui.separator();
+                        // Pick / Reject Flags
+                        if let Some(new_flag) = widgets::flag_buttons(ui, video.flag, true) {
+                            action = Some(PlayerAction::SetFlag(new_flag));
+                        }
 
-                    // Star Rating (1-5★)
-                    for star in (1..=5).rev() {
-                        let is_lit = star <= video.rating;
-                        let star_str = if is_lit { "★" } else { "☆" };
-                        let star_col = if is_lit { ACCENT_GOLD } else { TEXT_MUTED };
-                        if ui.small_button(RichText::new(star_str).color(star_col)).clicked() {
-                            let new_r = if video.rating == star { 0 } else { star };
+                        widgets::toolbar_divider(ui);
+
+                        // Rating stars
+                        if let Some(new_r) = widgets::rating_stars(ui, video.rating, 14.0) {
                             action = Some(PlayerAction::SetRating(new_r));
                         }
-                    }
-                    ui.label(RichText::new("Rating:").small().color(TEXT_SECONDARY));
+                    });
                 });
             });
-        });
 
         action
     }

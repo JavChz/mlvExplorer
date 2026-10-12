@@ -1,145 +1,99 @@
 use crate::db::{Database, VideoRecord};
 use crate::ui::theme::*;
-use egui::{Color32, RichText, Ui};
+use crate::ui::widgets::{self, icon};
+use egui::{RichText, Ui, Vec2};
 
 pub struct TechnicalSpecs;
 
 impl TechnicalSpecs {
     pub fn show(ui: &mut Ui, vid: &mut VideoRecord, db: &Database) -> Option<crate::ui::inspector::InspectorAction> {
         let mut action = None;
-        // Camera & Lens Metadata
-        ui.group(|ui| {
-            ui.label(RichText::new("CAMERA & OPTICS").strong().size(11.0).color(TEXT_SECONDARY));
-            ui.add_space(4.0);
+        let dash = || RichText::new("—").color(TEXT_MUTED);
 
-            egui::Grid::new("inspector_camera_grid").num_columns(2).striped(true).spacing([12.0, 4.0]).show(ui, |ui| {
-                ui.label("Camera:");
-                ui.label(if vid.camera_name.is_empty() { "Unknown" } else { &vid.camera_name });
-                ui.end_row();
-
-                if !vid.camera_serial.is_empty() {
-                    ui.label("Serial:");
-                    ui.label(&vid.camera_serial);
-                    ui.end_row();
-                }
-
-                ui.label("Lens:");
-                ui.label(if vid.lens_name.is_empty() { "Manual / Uncommunicated" } else { &vid.lens_name });
-                ui.end_row();
-
-                if vid.focal_length_mm > 0 {
-                    ui.label("Focal Length:");
-                    ui.label(format!("{} mm", vid.focal_length_mm));
-                    ui.end_row();
-                }
-
-                if vid.aperture_fstop > 0.0 {
-                    ui.label("Aperture:");
-                    ui.label(format!("f/{:.1}", vid.aperture_fstop));
-                    ui.end_row();
-                }
-
-                ui.label("Shutter:");
-                ui.label(vid.shutter_str());
-                ui.end_row();
-
-                ui.label("ISO:");
-                ui.label(format!("{}", vid.iso));
-                ui.end_row();
-
-                if vid.white_balance_kelvin > 0 {
-                    ui.label("White Balance:");
-                    ui.label(format!("{} K", vid.white_balance_kelvin));
-                    ui.end_row();
-                }
-            });
+        // Camera & lens metadata
+        widgets::section(ui, "Camera", true, None, |ui| {
+            if vid.camera_name.is_empty() {
+                widgets::prop_row(ui, "Camera", dash());
+            } else {
+                widgets::prop_row(ui, "Camera", vid.camera_name.as_str());
+            }
+            if !vid.camera_serial.is_empty() {
+                widgets::prop_row(ui, "Serial #", vid.camera_serial.as_str());
+            }
+            if vid.lens_name.is_empty() {
+                widgets::prop_row(ui, "Lens", RichText::new("Manual lens").color(TEXT_MUTED));
+            } else {
+                widgets::prop_row(ui, "Lens", vid.lens_name.as_str());
+            }
+            if vid.focal_length_mm > 0 {
+                widgets::prop_row(ui, "Focal Length", format!("{} mm", vid.focal_length_mm));
+            } else {
+                widgets::prop_row(ui, "Focal Length", dash());
+            }
+            if vid.aperture_fstop > 0.0 {
+                widgets::prop_row(ui, "Aperture", format!("f/{:.1}", vid.aperture_fstop));
+            } else {
+                widgets::prop_row(ui, "Aperture", dash());
+            }
+            widgets::prop_row(ui, "Shutter", vid.shutter_str());
+            if vid.iso > 0 {
+                widgets::prop_row(ui, "ISO", vid.iso.to_string());
+            } else {
+                widgets::prop_row(ui, "ISO", dash());
+            }
+            if vid.white_balance_kelvin > 0 {
+                widgets::prop_row(ui, "White Balance", format!("{} K", vid.white_balance_kelvin));
+            } else {
+                widgets::prop_row(ui, "White Balance", dash());
+            }
         });
 
-        ui.add_space(8.0);
+        // Clip / media attributes
+        widgets::section(ui, "Clip Attributes", true, None, |ui| {
+            widgets::prop_row(ui, "Resolution", format!("{} × {}", vid.width, vid.height));
 
-        // Technical Video Specifications
-        ui.group(|ui| {
-            ui.label(RichText::new("VIDEO SPECIFICATIONS").strong().size(11.0).color(TEXT_SECONDARY));
-            ui.add_space(4.0);
-
-            egui::Grid::new("inspector_specs_grid").num_columns(2).striped(true).spacing([12.0, 4.0]).show(ui, |ui| {
-                ui.label("Resolution:");
-                ui.label(format!("{} × {}", vid.width, vid.height));
-                ui.end_row();
-
-                ui.label("Aspect Stretch:");
-                let cur_s = vid.stretch_factor;
-                let s_label = match cur_s {
-                    s if (s - 3.0).abs() < 0.05 => "3.0x (1x3 / 3x1 Anamorphic)",
-                    s if (s - 2.0).abs() < 0.05 => "2.0x Anamorphic",
-                    s if (s - 1.75).abs() < 0.05 => "1.75x Anamorphic",
-                    s if (s - 1.5).abs() < 0.05 => "1.5x Anamorphic",
-                    s if (s - 1.333).abs() < 0.05 => "1.33x Anamorphic",
-                    _ => "1.0x (Square)",
-                };
-                egui::ComboBox::from_id_salt(format!("insp_stretch_{}", vid.id))
-                    .selected_text(s_label)
-                    .show_ui(ui, |ui| {
-                        for (factor, label) in [
-                            (1.0f32, "1.0x (1:1 Square)"),
-                            (3.0f32, "3.0x (1x3 / 3x1 Anamorphic / EOS M Crop Mood)"),
-                            (2.0f32, "2.0x (Standard 2x Anamorphic)"),
-                            (1.75f32, "1.75x Anamorphic"),
-                            (1.5f32, "1.5x Anamorphic"),
-                            (1.333f32, "1.33x Anamorphic"),
-                        ] {
-                            let is_sel = (cur_s - factor).abs() < 0.02;
-                            if ui.selectable_label(is_sel, label).clicked() {
-                                vid.stretch_factor = factor;
-                                let _ = db.set_stretch_factor(vid.id, factor);
-                                action = Some(crate::ui::inspector::InspectorAction::BatchSetStretch(factor));
-                            }
-                        }
-                    });
-                ui.end_row();
-
-                ui.label("Frame Rate:");
-                ui.label(format!("{:.3} fps", vid.fps));
-                ui.end_row();
-
-                ui.label("Total Frames:");
-                ui.label(format!("{}", vid.frame_count));
-                ui.end_row();
-
-                ui.label("Duration:");
-                ui.label(format!("{:.2}s ({})", vid.duration_seconds, vid.duration_tc()));
-                ui.end_row();
-
-                ui.label("Format:");
-                ui.label(&vid.codec);
-                ui.end_row();
-
-                ui.label("Audio Track:");
-                ui.label(if vid.has_audio { "Yes (WAV/Linear PCM)" } else { "No Audio" });
-                ui.end_row();
-
-                ui.label("Spanned Chunks:");
-                if vid.chunk_count > 1 {
-                    ui.label(
-                        RichText::new(format!("{} files (⚡ 5D3 Dual-Card Spanned)", vid.chunk_count))
-                            .color(Color32::from_rgb(245, 158, 11))
-                            .strong(),
-                    );
-                } else {
-                    ui.label("1 file (Standard Single Card)");
-                }
-                ui.end_row();
-
-                ui.label("File Size:");
-                ui.label(format!("{:.2} MB", vid.file_size as f64 / 1_048_576.0));
-                ui.end_row();
-
-                if let Some(ref d) = vid.date_recorded {
-                    ui.label("Captured:");
-                    ui.label(d);
-                    ui.end_row();
+            widgets::field_row(ui, "Desqueeze", |ui| {
+                let w = ui.available_width();
+                if let Some(factor) = widgets::desqueeze_combo(ui, ("insp_desqueeze", vid.id), vid.stretch_factor, w - 8.0) {
+                    vid.stretch_factor = factor;
+                    let _ = db.set_stretch_factor(vid.id, factor);
+                    action = Some(crate::ui::inspector::InspectorAction::BatchSetStretch(factor));
                 }
             });
+
+            widgets::prop_row(ui, "Frame Rate", widgets::format_fps(vid.fps));
+            widgets::prop_row(ui, "Duration", widgets::timecode(vid.frame_count as usize, vid.fps));
+            widgets::prop_row(ui, "Frames", vid.frame_count.to_string());
+            widgets::prop_row(ui, "Bit Depth", format!("{}-bit", vid.bits_per_pixel));
+            if !vid.codec.is_empty() {
+                widgets::prop_row(ui, "Format", vid.codec.as_str());
+            }
+            if vid.has_audio {
+                widgets::prop_row(ui, "Audio", "Linear PCM (WAV)");
+            } else {
+                widgets::prop_row(ui, "Audio", RichText::new("None").color(TEXT_MUTED));
+            }
+            if vid.chunk_count > 1 {
+                widgets::field_row(ui, "Spanned Media", |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!("{} Spanned ({} files)", icon::STACK, vid.chunk_count))
+                                .color(WARNING),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text(format!(
+                        "Recording split across {} files (.MLV, .M00…)\nDynamically interleaved and unified as a single clip.",
+                        vid.chunk_count
+                    ));
+                });
+            } else {
+                widgets::prop_row(ui, "Spanned Media", "Single file");
+            }
+            widgets::prop_row(ui, "File Size", widgets::format_bytes(vid.file_size));
+            if let Some(ref d) = vid.date_recorded {
+                widgets::prop_row(ui, "Date Recorded", d.as_str());
+            }
         });
         action
     }
@@ -149,12 +103,23 @@ pub struct LocationSection;
 
 impl LocationSection {
     pub fn show(ui: &mut Ui, file_path: &str) {
-        ui.group(|ui| {
-            ui.label(RichText::new("LOCATION").strong().size(11.0).color(TEXT_SECONDARY));
-            ui.label(RichText::new(file_path).monospace().small().color(TEXT_MUTED));
-            ui.add_space(4.0);
+        widgets::section(ui, "File", true, None, |ui| {
+            ui.add(
+                egui::Label::new(RichText::new(file_path).monospace().size(FONT_CAPTION).color(TEXT_SECONDARY))
+                    .wrap(),
+            );
+            ui.add_space(6.0);
 
-            if ui.button("📂 Show in Explorer").clicked() {
+            let label = if cfg!(target_os = "macos") {
+                "Reveal in Finder"
+            } else if cfg!(target_os = "windows") {
+                "Show in Explorer"
+            } else {
+                "Show in File Manager"
+            };
+            let btn = egui::Button::new(widgets::icon_label(icon::FOLDER_OPEN, label))
+                .min_size(Vec2::new(ui.available_width(), CONTROL_HEIGHT + 2.0));
+            if ui.add(btn).clicked() {
                 if let Some(parent) = std::path::Path::new(file_path).parent() {
                     let _ = open::that(parent);
                 }

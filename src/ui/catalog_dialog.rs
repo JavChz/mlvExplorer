@@ -1,5 +1,6 @@
 use crate::db::Database;
 use crate::ui::theme::*;
+use crate::ui::widgets::{self, icon};
 use egui::{Context, RichText, Window};
 
 pub struct CatalogDialog {
@@ -24,24 +25,25 @@ impl CatalogDialog {
             return false;
         }
 
-        Window::new(RichText::new("🗄 Catalog Backup & Migration").strong())
+        let title = widgets::icon_label(icon::DATABASE, "Catalog Backup & Migration");
+
+        Window::new(RichText::new(title).strong().size(FONT_BODY))
             .open(&mut self.is_open)
             .resizable(false)
             .collapsible(false)
-            .fixed_size([500.0, 340.0])
+            .fixed_size([480.0, 310.0])
             .show(ctx, |ui| {
-                ui.label(RichText::new("Protect your ratings, custom tags, pick flags, and notes.").color(TEXT_SECONDARY));
+                ui.label(RichText::new("Protect your ratings, keywords, pick flags, and notes.").color(TEXT_SECONDARY));
                 ui.add_space(4.0);
                 ui.separator();
-                ui.add_space(8.0);
+                ui.add_space(6.0);
 
                 // 1. Live SQLite Database Backup
-                ui.group(|ui| {
-                    ui.label(RichText::new("1. Native SQLite Binary Backup (.db)").strong());
-                    ui.label(RichText::new("Takes a hot, atomic snapshot of your entire library catalog without locking or stopping playback.").small().color(TEXT_MUTED));
-                    ui.add_space(4.0);
+                widgets::section(ui, "1. Native SQLite Binary Backup (.db)", true, None, |ui| {
+                    ui.label(RichText::new("Takes a hot, atomic snapshot of your entire catalog without stopping playback.").size(FONT_SMALL).color(TEXT_MUTED));
+                    ui.add_space(6.0);
 
-                    if ui.button("💾 Backup SQLite Database to Disk...").clicked() {
+                    if widgets::button(ui, widgets::icon_label(icon::FLOPPY_DISK, "Backup SQLite Database to Disk…")).clicked() {
                         if let Some(dest) = rfd::FileDialog::new()
                             .set_file_name("mlv_catalog_backup.db")
                             .add_filter("SQLite Database", &["db", "sqlite"])
@@ -65,16 +67,15 @@ impl CatalogDialog {
                     }
                 });
 
-                ui.add_space(8.0);
+                ui.add_space(6.0);
 
                 // 2. Portable JSON Export & Import
-                ui.group(|ui| {
-                    ui.label(RichText::new("2. Portable Catalog JSON (.json)").strong());
-                    ui.label(RichText::new("Export ratings and tags to portable JSON. Importing will merge tags/ratings by matching video paths.").small().color(TEXT_MUTED));
-                    ui.add_space(4.0);
+                widgets::section(ui, "2. Portable Catalog JSON (.json)", true, None, |ui| {
+                    ui.label(RichText::new("Export metadata to portable JSON. Importing merges tags and ratings by matching clip paths.").size(FONT_SMALL).color(TEXT_MUTED));
+                    ui.add_space(6.0);
 
                     ui.horizontal(|ui| {
-                        if ui.button("📤 Export Catalog JSON...").clicked() {
+                        if widgets::button(ui, widgets::icon_label(icon::UPLOAD_SIMPLE, "Export Catalog JSON…")).clicked() {
                             if let Some(dest) = rfd::FileDialog::new()
                                 .set_file_name("mlv_catalog_export.json")
                                 .add_filter("JSON Document", &["json"])
@@ -97,7 +98,7 @@ impl CatalogDialog {
                             }
                         }
 
-                        if ui.button("📥 Import & Merge JSON...").clicked() {
+                        if widgets::button(ui, widgets::icon_label(icon::DOWNLOAD_SIMPLE, "Import & Merge JSON…")).clicked() {
                             if let Some(src) = rfd::FileDialog::new()
                                 .add_filter("JSON Document", &["json"])
                                 .pick_file()
@@ -122,12 +123,12 @@ impl CatalogDialog {
                     });
                 });
 
-                ui.add_space(10.0);
+                ui.add_space(8.0);
 
                 // Status Message
                 if let Some((ref msg, is_err)) = self.status_message {
                     let col = if is_err { FLAG_REJECTED } else { FLAG_PICKED };
-                    ui.label(RichText::new(msg).color(col));
+                    ui.label(RichText::new(msg).size(FONT_SMALL).color(col));
                 }
             });
 

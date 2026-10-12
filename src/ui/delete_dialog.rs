@@ -1,3 +1,5 @@
+use crate::ui::theme::*;
+use crate::ui::widgets::{self, icon};
 use egui::{Color32, Context, RichText, Window};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,33 +50,35 @@ impl DeleteConfirmDialog {
         let mut result = None;
         let count = self.target_indices.len();
 
-        let title = match self.mode {
+        let (title_glyph, title_text) = match self.mode {
             DeleteMode::RemoveFromCatalog => {
                 if count <= 1 {
-                    "🗑 Remove Clip from Catalog"
+                    (icon::PROHIBIT, "Remove Clip from Catalog")
                 } else {
-                    "🗑 Remove Clips from Catalog"
+                    (icon::PROHIBIT, "Remove Clips from Catalog")
                 }
             }
             DeleteMode::MoveToTrash => {
                 if count <= 1 {
-                    "⚠️ Move Clip to Trash (Recycle Bin)"
+                    (icon::TRASH, "Move Clip to Trash")
                 } else {
-                    "⚠️ Move Clips to Trash (Recycle Bin)"
+                    (icon::TRASH, "Move Clips to Trash")
                 }
             }
         };
 
+        let title = widgets::icon_label(title_glyph, title_text);
+
         let mut is_open = self.is_open;
         let mut should_close = false;
 
-        Window::new(RichText::new(title).strong())
+        Window::new(RichText::new(title).strong().size(FONT_BODY))
             .open(&mut is_open)
             .resizable(false)
             .collapsible(false)
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(ctx.screen_rect().center())
-            .fixed_size([460.0, 240.0])
+            .fixed_size([460.0, 220.0])
             .show(ctx, |ui| {
                 match self.mode {
                     DeleteMode::RemoveFromCatalog => {
@@ -85,33 +89,34 @@ impl DeleteConfirmDialog {
                                 if count == 1 { "" } else { "s" }
                             ))
                             .strong()
+                            .color(TEXT_PRIMARY)
                         );
                         ui.add_space(4.0);
                         ui.label(
                             RichText::new(
-                                "This will only remove the metadata, ratings, and tags from MLV Explorer's library database.\nYour original RAW files on disk will NOT be touched or deleted."
+                                "This will only remove the metadata, ratings, and tags from the catalog database.\nYour original RAW files on disk will NOT be deleted or moved."
                             )
-                            .small()
-                            .color(Color32::from_rgb(170, 180, 200))
+                            .size(FONT_SMALL)
+                            .color(TEXT_SECONDARY)
                         );
                     }
                     DeleteMode::MoveToTrash => {
                         ui.label(
                             RichText::new(format!(
-                                "⚠️ Are you sure you want to move {} clip{} to the Trash / Recycle Bin?",
+                                "Are you sure you want to move {} clip{} to the Trash / Recycle Bin?",
                                 count,
                                 if count == 1 { "" } else { "s" }
                             ))
                             .strong()
-                            .color(Color32::from_rgb(240, 100, 100))
+                            .color(FLAG_REJECTED)
                         );
                         ui.add_space(4.0);
                         ui.label(
                             RichText::new(
-                                "This will move the actual MLV file(s) and any spanned companion slices (.M00, .M01) on disk directly into your operating system's Trash / Recycle Bin, and remove them from the catalog."
+                                "This will move the actual MLV file(s) and any spanned companion slices (.M00, .M01) on disk directly into your operating system's Trash."
                             )
-                            .small()
-                            .color(Color32::from_rgb(230, 180, 180))
+                            .size(FONT_SMALL)
+                            .color(TEXT_SECONDARY)
                         );
                     }
                 }
@@ -120,30 +125,31 @@ impl DeleteConfirmDialog {
                 ui.separator();
                 ui.add_space(6.0);
 
-                // Preview clip names (up to 4, then summary)
-                ui.label(RichText::new("Target clips:").small().strong());
+                // Preview clip names (up to 4)
+                ui.label(RichText::new("Target clips:").size(FONT_CAPTION).color(TEXT_MUTED));
                 egui::ScrollArea::vertical().max_height(60.0).show(ui, |ui| {
                     for name in self.file_names.iter().take(6) {
-                        ui.label(RichText::new(format!(" • {}", name)).small().monospace());
+                        ui.label(RichText::new(format!("  • {}", name)).size(FONT_SMALL).monospace().color(TEXT_PRIMARY));
                     }
                     if self.file_names.len() > 6 {
                         ui.label(
-                            RichText::new(format!("   ... and {} more", self.file_names.len() - 6))
-                                .small()
-                                .italics()
+                            RichText::new(format!("    … and {} more", self.file_names.len() - 6))
+                                .size(FONT_CAPTION)
+                                .color(TEXT_MUTED)
                         );
                     }
                 });
 
                 ui.add_space(10.0);
                 ui.separator();
-                ui.add_space(8.0);
+                ui.add_space(6.0);
 
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let confirm_btn = match self.mode {
                             DeleteMode::RemoveFromCatalog => {
                                 egui::Button::new(RichText::new("Remove from Catalog").strong())
+                                    .min_size(egui::Vec2::new(0.0, CONTROL_HEIGHT))
                             }
                             DeleteMode::MoveToTrash => {
                                 egui::Button::new(
@@ -151,7 +157,8 @@ impl DeleteConfirmDialog {
                                         .color(Color32::WHITE)
                                         .strong()
                                 )
-                                .fill(Color32::from_rgb(180, 40, 40))
+                                .fill(DANGER_FILL)
+                                .min_size(egui::Vec2::new(0.0, CONTROL_HEIGHT))
                             }
                         };
 
@@ -163,7 +170,7 @@ impl DeleteConfirmDialog {
                             });
                         }
 
-                        if ui.button("Cancel").clicked() {
+                        if widgets::button(ui, "Cancel").clicked() {
                             should_close = true;
                             result = Some(DeleteConfirmResult::Cancelled);
                         }

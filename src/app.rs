@@ -571,24 +571,25 @@ impl eframe::App for MlvExplorerApp {
         if !is_fullscreen_player {
             if let Some(prog) = &self.import_progress {
                 egui::TopBottomPanel::top("import_progress_banner")
-                    .exact_height(32.0)
+                    .exact_height(28.0)
                     .show(ctx, |ui| {
                         ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 8.0;
                             ui.spinner();
-                            ui.label(RichText::new(format!("Importing ({}/{}):", prog.current, prog.total)).strong().color(TEXT_PRIMARY));
-                            ui.label(RichText::new(&prog.current_file).color(ACCENT_BLUE));
+                            ui.label(RichText::new(format!("Importing ({}/{}):", prog.current, prog.total)).strong().size(FONT_SMALL).color(TEXT_PRIMARY));
+                            ui.label(RichText::new(&prog.current_file).size(FONT_SMALL).color(ACCENT_HOVER));
 
                             let fraction = if prog.total > 0 { prog.current as f32 / prog.total as f32 } else { 0.0 };
                             ui.add(
                                 egui::ProgressBar::new(fraction)
                                     .show_percentage()
                                     .animate(true)
-                                    .desired_width(200.0),
+                                    .desired_width(180.0),
                             );
 
                             ui.label(
-                                RichText::new(format!("{} added · {} duplicates skipped", prog.imported, prog.duplicates))
-                                    .small()
+                                RichText::new(format!("{} added  ·  {} duplicates skipped", prog.imported, prog.duplicates))
+                                    .size(FONT_CAPTION)
                                     .color(TEXT_MUTED),
                             );
                         });
@@ -602,29 +603,31 @@ impl eframe::App for MlvExplorerApp {
                 .exact_height(24.0)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
                         if let Some(prog) = &self.import_progress {
                             ui.spinner();
                             let fraction = if prog.total > 0 { prog.current as f32 / prog.total as f32 } else { 0.0 };
                             ui.add(
                                 egui::ProgressBar::new(fraction)
                                     .animate(true)
-                                    .desired_width(120.0),
+                                    .desired_width(100.0),
                             );
                             ui.label(
                                 RichText::new(format!(
-                                    "Importing {}/{} ({}) · {} skipped",
+                                    "Importing {}/{} ({})  ·  {} skipped",
                                     prog.current, prog.total, prog.current_file, prog.duplicates
                                 ))
-                                .small()
-                                .color(ACCENT_BLUE),
+                                .size(FONT_CAPTION)
+                                .color(ACCENT_HOVER),
                             );
                         } else {
-                            ui.label(RichText::new(&self.status_bar_text).small().color(TEXT_MUTED));
+                            ui.label(RichText::new(&self.status_bar_text).size(FONT_CAPTION).color(TEXT_MUTED));
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(RichText::new(&self.gpu_info).small().color(TEXT_MUTED));
+                            ui.add_space(4.0);
+                            ui.label(RichText::new(&self.gpu_info).size(FONT_CAPTION).color(TEXT_MUTED));
                             ui.separator();
-                            ui.label(RichText::new(format!("{} clips", self.videos.len())).small().color(TEXT_SECONDARY));
+                            ui.label(RichText::new(format!("{} clips", self.videos.len())).size(FONT_CAPTION).color(TEXT_SECONDARY));
                         });
                     });
                 });
