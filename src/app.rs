@@ -818,6 +818,25 @@ impl eframe::App for MlvExplorerApp {
                             GridAction::RequestMoveToTrash(indices) => {
                                 self.prompt_delete(DeleteMode::MoveToTrash, indices);
                             }
+                            GridAction::BoxSelect(indices) => {
+                                let modifiers = ui.input(|i| i.modifiers);
+                                if modifiers.shift || modifiers.ctrl || modifiers.command {
+                                    // Add to existing selection
+                                    for idx in indices {
+                                        if !self.selected_indices.contains(&idx) {
+                                            self.selected_indices.push(idx);
+                                        }
+                                    }
+                                } else {
+                                    // Replace selection with box selection
+                                    self.selected_indices = indices;
+                                }
+                                self.selected_video_idx = self.selected_indices.first().copied();
+                            }
+                            GridAction::DeselectAll => {
+                                self.selected_indices.clear();
+                                self.selected_video_idx = None;
+                            }
                             GridAction::SortChanged => {
                                 self.reload_catalog();
                             }

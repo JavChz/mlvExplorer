@@ -10,23 +10,32 @@ Designed for cinematographers and filmmakers who shoot with Magic Lantern on Can
 
 ### 🖼️ Photo Browser-Style Catalog & Ingestion
 - **Contact Sheet Grid**: High-density thumbnail grid with smooth card scaling, aspect-ratio preservation, duration overlays, resolution badges, audio presence indicators, star ratings, and pick/reject flags.
+- **Rubberband Box Drag Selection**: Click and drag across the catalog canvas to marquee-select multiple clips at once with interactive bounding box visualization.
+- **Sequential & Modifier Selection**:
+  - `Shift` + Click: Continuous range selection from the active clip to the clicked clip.
+  - `Ctrl` / `Cmd` + Click: Toggle individual clips in and out of the active selection.
+  - `Ctrl+D` / `Cmd+D`: Instantly deselect all clips.
 - **Calendar Day Grouping**: Organize footage chronologically by shooting days with collapsible calendar headers (`Saturday, October 11, 2026 · 14 clips · 12.4 GB · 05:22`) and ascending/descending capture-date sorting.
 - **Drag-and-Drop Ingestion**: Drop single `.mlv` clips or multi-gigabyte directories directly onto the window. Includes recursive discovery, duplicate detection, and a background import progress bar.
+- **Right-Click Deletion Workflows**:
+  - **Remove from Catalog**: Remove records, ratings, and tags from the SQLite database while leaving original RAW files on disk completely untouched.
+  - **Move to Trash**: Safely sends the active or selected clips (including all 5D3 multi-card spanned slices `.M00`, `.M01`, etc.) directly into the OS Recycle Bin/Trash with modal confirmation.
 - **Non-Destructive SQLite Catalog**: Instant database-backed filtering and search. Includes live atomic database backups (`.db`) and portable JSON catalog export/import across multiple editing machines.
 
-### 🎬 Cinema Production Slate & Metadata
-- **Standard Industry Slate**: Assign and edit production metadata per take:
-  - **Scene**, **Shot**, **Take**
-  - **Camera Unit** (e.g., `A-Cam`, `B-Cam`)
-  - **Location**
-- **Visual Slate Badges**: Slate labels (`SC 12A / SH 2 / TK 4 · A-Cam`) are rendered directly on grid cards and the player header.
+### 🎬 Cinema Production Slate & Batch Inspector
+- **Batch Editing Across Multiple Clips**: Selecting multiple clips lets you inspect and modify attributes in bulk:
+  - **Star Ratings**: Set 1–5 stars or clear ratings for all selected takes.
+  - **Pick / Reject Flags**: Flag multiple takes as Picked, Rejected, or Neutral in a single click.
+  - **Custom Tags**: Add new tag chips (`#interview`, `#b-roll`) or remove tags from all selected clips simultaneously.
+  - **Production Slate**: Batch-assign **Scene**, **Shot**, **Take**, **Camera Unit** (e.g. `A-Cam`, `B-Cam`), and **Location**.
+  - **Aspect Ratio Stretch**: Batch de-squeeze anamorphic footage across entire scenes.
+  - **Notes**: Update production comments across multiple takes simultaneously.
 - **Deep Hardware EXIF Extraction**: Reads camera model, camera serial number, lens name, focal length, aperture ($f$-stop), shutter speed, ISO, kelvin color temperature, frame rate, and raw bit depth.
-- **Culling & Rating**: Star ratings (1 to 5 stars), Pick (`P`) / Reject (`X`) / Neutral (`U`) flags, customizable tags (`#interview`, `#b-roll`), and freeform shot notes.
 
-### 🎥 Player & Audio Sync
-- **Synchronized Audio Playback**: Linear PCM audio parsing (`WAVI` & `AUDF` blocks) with real-time synchronized audio output via `rodio`, timeline scrubbing, volume slider, mute toggle, and audio format badges (`48 kHz / 16-bit stereo`).
+### 🎥 Cinema Player & Audio Sync
+- **Synchronized Audio Playback Engine**: Linear PCM audio parsing (`WAVI` & `AUDF` blocks) with real-time synchronized audio output via `rodio`, timeline scrubbing, volume slider, mute toggle, and track info pills (`48 kHz / 16-bit stereo`).
 - **Cinema Fullscreen Experience**: Press **`F`** to toggle immersive borderless fullscreen video mode with auto-hiding transport HUD, or double-click anywhere on the video canvas.
-- **Aspect Ratio & Anamorphic De-squeeze**: Automatic format detection and manual overrides for standard (1:1), anamorphic (1.33x, 1.5x, 1.75x, 2.0x), and Magic Lantern 3x1 / 1x3 anamorphic crop modes.
+- **Aspect Ratio & Anamorphic De-squeeze**: Explicit format detection from `DISP`/`RAWC` blocks and manual overrides for standard (1:1), anamorphic (1.33x, 1.5x, 1.75x, 2.0x), and Magic Lantern 3x1 / 1x3 anamorphic crop modes.
 - **Color Preview & Exposure**: High-speed Bayer demosaicing with sensor black/white normalization, camera color matrix conversion to linear sRGB, daylight white balance, and real-time exposure & white balance adjustment sliders.
 - **One-Click Bridge to MLV App**: Dedicated **"Open in MLVApp"** action to instantly launch the current clip in [MLV App](https://github.com/ilia3101/MLV-App) for deep grading, raw export, and CinemaDNG/ProRes conversion.
 
@@ -45,11 +54,12 @@ Designed for cinematographers and filmmakers who shoot with Magic Lantern on Can
 | **`F`** | Player View | Toggle Cinema Fullscreen Video mode |
 | **`Space`** | Player View | Play / Pause playback |
 | **`Left` / `Right`** | Player View | Step 1 frame backward / forward |
-| **`1` – `5`** | Grid / Player | Set Star Rating (1 to 5 stars) |
-| **`0`** | Grid / Player | Clear Star Rating |
-| **`P`** | Grid / Player | Flag as **Picked** |
-| **`X`** | Grid / Player | Flag as **Rejected** |
-| **`U`** | Grid / Player | **Unflag** / reset status to Neutral |
+| **`1` – `5`** | Grid / Player | Set Star Rating (1 to 5 stars) on selected clip(s) |
+| **`0`** | Grid / Player | Clear Star Rating on selected clip(s) |
+| **`P`** | Grid / Player | Flag selected clip(s) as **Picked** |
+| **`X`** | Grid / Player | Flag selected clip(s) as **Rejected** |
+| **`U`** | Grid / Player | **Unflag** / reset selected clip(s) to Neutral |
+| **`Ctrl` + `D`** / **`Cmd` + `D`** | Grid View | **Deselect All** clips |
 | **`Del` / `Backspace`** | Grid View | **Remove from Catalog** (with confirmation) |
 | **`Esc`** | Any | Exit Fullscreen / Return to Grid View |
 

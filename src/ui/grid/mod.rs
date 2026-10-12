@@ -7,7 +7,7 @@ pub use types::{GridAction, GridView};
 use crate::db::{SortOrder, VideoRecord};
 use crate::thumbnails::ThumbnailManager;
 use crate::ui::theme::*;
-use egui::{Color32, Pos2, RichText, Rounding, Stroke, Ui, Vec2};
+use egui::{Color32, Pos2, Rect, RichText, Rounding, Stroke, Ui, Vec2};
 
 struct DayGroup {
     day_key: String,
@@ -131,7 +131,11 @@ impl GridView {
         let footer_h = 68.0;
         let card_h = thumb_h + footer_h;
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        let mut card_rects: Vec<(usize, Rect)> = Vec::with_capacity(videos.len());
+
+        let scroll_output = egui::ScrollArea::vertical()
+            .drag_to_scroll(false)
+            .show(ui, |ui| {
             let available_width = ui.available_width();
             let columns = ((available_width / (card_w + 12.0)).floor() as usize).max(1);
 
@@ -203,7 +207,7 @@ impl GridView {
                                 let vid = &videos[i];
                                 let is_selected = selected_indices.contains(&i);
 
-                                if let Some(card_act) = Card::show(
+                                let (card_act, rect) = Card::show(
                                     ui,
                                     i,
                                     vid,
@@ -213,8 +217,11 @@ impl GridView {
                                     card_h,
                                     thumb_h,
                                     thumb_mgr,
-                                ) {
-                                    action = Some(card_act);
+                                );
+                                card_rects.push((i, rect));
+
+                                if let Some(a) = card_act {
+                                    action = Some(a);
                                 }
 
                                 if (c_idx + 1) % columns == 0 {
@@ -233,7 +240,7 @@ impl GridView {
                         for (i, vid) in videos.iter().enumerate() {
                             let is_selected = selected_indices.contains(&i);
 
-                            if let Some(card_act) = Card::show(
+                            let (card_act, rect) = Card::show(
                                 ui,
                                 i,
                                 vid,
@@ -243,8 +250,11 @@ impl GridView {
                                 card_h,
                                 thumb_h,
                                 thumb_mgr,
-                            ) {
-                                action = Some(card_act);
+                            );
+                            card_rects.push((i, rect));
+
+                            if let Some(a) = card_act {
+                                action = Some(a);
                             }
 
                             if (i + 1) % columns == 0 {
@@ -254,6 +264,77 @@ impl GridView {
                     });
             }
         });
+
+        // Mouse Rubberband Box Selection
+        let inner_rect = scroll_output.inner_rect;
+        let pointer = ui.input(|i| i.pointer.clone());
+
+        // Check if user pressed left mouse button
+        if pointer.primary_pressed() {
+            if let Some(press_pos) = pointer.press_origin() {
+                if inner_rect.contains(press_pos) {
+                    let hit_card = card_rects.iter().any(|(_, r)| r.contains(press_pos));
+                    if !hit_card {
+                        self.drag_start_pos = Some(press_pos);
+                        self.drag_current_pos = Some(press_pos);
+                    }
+                }
+            }
+        }
+
+        if self.drag_start_pos.is_some() {
+            if pointer.primary_down() {
+                if let Some(pos) = pointer.latest_pos() {
+                    self.drag_current_pos = Some(pos);
+                    ui.ctx().request_repaint(); // Keep repainting while dragging
+                }
+            }
+        }
+
+        if let (Some(start), Some(curr)) = (self.drag_start_pos, self.drag_current_pos) {
+            let drag_dist = (curr - start).length();
+            if drag_dist > 4.0 {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                let box_rect = Rect::from_two_pos(start, curr);
+
+                // Draw translucent selection rectangle with vibrant blue border on top layer
+                let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Foreground,
+                    egui::Id::new("grid_selection_box"),
+                ));
+                painter.rect(
+                    box_rect,
+                    Rounding::same(2.0),
+                    Color32::from_rgba_unmultiplied(59, 130, 246, 50),
+                    Stroke::new(1.5_f32, Color32::from_rgb(96, 165, 250)),
+                );
+
+                // Find all cards intersecting box_rect
+                let selected_in_box: Vec<usize> = card_rects
+                    .iter()
+                    .filter(|(_, r)| r.intersects(box_rect))
+                    .map(|(idx, _)| *idx)
+                    .collect();
+
+                if pointer.primary_released() {
+                    self.drag_start_pos = None;
+                    self.drag_current_pos = None;
+                    action = Some(GridAction::BoxSelect(selected_in_box));
+                }
+            } else if pointer.primary_released() {
+                // Clicked on empty space without dragging -> Deselect all
+                self.drag_start_pos = None;
+                self.drag_current_pos = None;
+                if action.is_none() {
+                    action = Some(GridAction::DeselectAll);
+                }
+            }
+        }
+
+        if pointer.primary_released() {
+            self.drag_start_pos = None;
+            self.drag_current_pos = None;
+        }
 
         action
     }
