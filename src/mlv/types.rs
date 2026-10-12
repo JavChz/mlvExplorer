@@ -41,6 +41,8 @@ pub struct MlvMetadata {
     pub binning_x: u16,
     pub binning_y: u16,
     pub pixel_aspect_ratio: f32,
+    /// Indicates whether clip utilizes 5D3 card spanning (multiple chunk files written in parallel)
+    pub is_dual_card: bool,
 }
 
 impl MlvMetadata {

@@ -250,10 +250,9 @@ impl MlvExplorerApp {
                 if self.selected_video_idx.is_some() {
                     self.view_mode = ViewMode::Player;
                     self.player_view.is_fullscreen = true;
+                    self.player_view.show_overlay_controls = false;
                     self.ensure_playback(ctx);
                 }
-            } else {
-                self.player_view.is_fullscreen = !self.player_view.is_fullscreen;
             }
         }
 
@@ -406,31 +405,33 @@ impl eframe::App for MlvExplorerApp {
                 });
         }
 
-        // Import Progress Banner (shown below Top Bar when an import is actively running)
-        if let Some(prog) = &self.import_progress {
-            egui::TopBottomPanel::top("import_progress_banner")
-                .exact_height(32.0)
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(RichText::new(format!("Importing ({}/{}):", prog.current, prog.total)).strong().color(TEXT_PRIMARY));
-                        ui.label(RichText::new(&prog.current_file).color(ACCENT_BLUE));
+        // Import Progress Banner (shown below Top Bar when an import is actively running and not in fullscreen player)
+        if !is_fullscreen_player {
+            if let Some(prog) = &self.import_progress {
+                egui::TopBottomPanel::top("import_progress_banner")
+                    .exact_height(32.0)
+                    .show(ctx, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(RichText::new(format!("Importing ({}/{}):", prog.current, prog.total)).strong().color(TEXT_PRIMARY));
+                            ui.label(RichText::new(&prog.current_file).color(ACCENT_BLUE));
 
-                        let fraction = if prog.total > 0 { prog.current as f32 / prog.total as f32 } else { 0.0 };
-                        ui.add(
-                            egui::ProgressBar::new(fraction)
-                                .show_percentage()
-                                .animate(true)
-                                .desired_width(200.0),
-                        );
+                            let fraction = if prog.total > 0 { prog.current as f32 / prog.total as f32 } else { 0.0 };
+                            ui.add(
+                                egui::ProgressBar::new(fraction)
+                                    .show_percentage()
+                                    .animate(true)
+                                    .desired_width(200.0),
+                            );
 
-                        ui.label(
-                            RichText::new(format!("{} added · {} duplicates skipped", prog.imported, prog.duplicates))
-                                .small()
-                                .color(TEXT_MUTED),
-                        );
+                            ui.label(
+                                RichText::new(format!("{} added · {} duplicates skipped", prog.imported, prog.duplicates))
+                                    .small()
+                                    .color(TEXT_MUTED),
+                            );
+                        });
                     });
-                });
+            }
         }
 
         // 2. Status Bar (Bottom)
@@ -502,7 +503,12 @@ impl eframe::App for MlvExplorerApp {
         }
 
         // 5. Central Workspace: Grid or Player View
-        egui::CentralPanel::default().show(ctx, |ui| {
+        let central_frame = if is_fullscreen_player {
+            egui::Frame::none().fill(egui::Color32::from_rgb(10, 10, 12))
+        } else {
+            egui::Frame::central_panel(&ctx.style())
+        };
+        egui::CentralPanel::default().frame(central_frame).show(ctx, |ui| {
             match self.view_mode {
                 ViewMode::Grid => {
                     if let Some(action) = self.grid_view.show(
@@ -555,6 +561,8 @@ impl eframe::App for MlvExplorerApp {
                                             PlayerAction::BackToGrid => {
                                                 self.view_mode = ViewMode::Grid;
                                                 self.player_view.is_fullscreen = false;
+                                                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                                                ctx.request_repaint();
                                             }
                                             PlayerAction::Seek(frame) => {
                                                 pb.set_target(frame, self.player_view.is_looping);
@@ -574,7 +582,10 @@ impl eframe::App for MlvExplorerApp {
                                                 let _ = self.db.set_stretch_factor(id, factor);
                                                 self.reload_catalog();
                                             }
-                                            PlayerAction::ToggleFullscreen => {}
+                                            PlayerAction::ToggleFullscreen => {
+                                                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.player_view.is_fullscreen));
+                                                ctx.request_repaint();
+                                            }
                                             PlayerAction::OpenInMlvApp => {
                                                 let path = PathBuf::from(&vid.file_path);
                                                 self.open_in_mlv_app(&path);

@@ -16,9 +16,7 @@ impl HeaderBar {
         let mut action = None;
 
         ui.horizontal(|ui| {
-            if ui.button(RichText::new("⬅ Library [G]").strong()).clicked()
-                || ui.input(|i| !view.is_fullscreen && (i.key_pressed(egui::Key::G) || i.key_pressed(egui::Key::Escape)))
-            {
+            if ui.button(RichText::new("⬅ Library [G]").strong()).clicked() {
                 action = Some(PlayerAction::BackToGrid);
             }
 
@@ -33,6 +31,17 @@ impl HeaderBar {
             ui.label(RichText::new(format!("{:.3} fps", video.fps)).small().color(TEXT_SECONDARY));
             ui.label(RichText::new("·").color(TEXT_MUTED));
             ui.label(RichText::new(&video.codec).small().color(Color32::from_rgb(147, 197, 253)));
+
+            if video.chunk_count > 1 {
+                ui.label(RichText::new("·").color(TEXT_MUTED));
+                ui.label(
+                    RichText::new(format!("⚡ 5D3 Dual-Card Spanned ({} Chunks)", video.chunk_count))
+                        .small()
+                        .strong()
+                        .color(Color32::from_rgb(245, 158, 11)),
+                )
+                .on_hover_text("This clip was captured across CF + SD cards (card spanning). All chunks are dynamically interleaved and decoded seamlessly.");
+            }
 
             if !video.camera_name.is_empty() {
                 ui.label(RichText::new("·").color(TEXT_MUTED));
@@ -75,6 +84,11 @@ impl HeaderBar {
                 let fs_label = if view.is_fullscreen { "🗗 Exit [F]" } else { "⛶ Fullscreen [F]" };
                 if ui.selectable_label(view.is_fullscreen, RichText::new(fs_label).small()).on_hover_text("Toggle Fullscreen Cinema Mode [F]").clicked() {
                     view.is_fullscreen = !view.is_fullscreen;
+                    if view.is_fullscreen {
+                        view.show_overlay_controls = false;
+                        view.zoom_mode = super::types::ZoomMode::Fit;
+                        view.pan_offset = egui::Vec2::ZERO;
+                    }
                     action = Some(PlayerAction::ToggleFullscreen);
                 }
 

@@ -30,6 +30,7 @@ pub struct PlayerView {
     pub zoom_mode: ZoomMode,
     pub pan_offset: Vec2,
     pub is_fullscreen: bool,
+    pub show_overlay_controls: bool,
     pub last_frame_time: Instant,
     pub last_shown_frame: Option<Arc<crate::mlv::DecodedFrame>>,
 }
@@ -47,6 +48,7 @@ impl Default for PlayerView {
             zoom_mode: ZoomMode::Fit,
             pan_offset: Vec2::ZERO,
             is_fullscreen: false,
+            show_overlay_controls: true,
             last_frame_time: Instant::now(),
             last_shown_frame: None,
         }

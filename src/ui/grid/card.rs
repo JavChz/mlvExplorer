@@ -167,6 +167,22 @@ impl Card {
             );
         }
 
+        // Dual Card / Spanned Pill (top-right)
+        if vid.chunk_count > 1 {
+            let span_rect = Rect::from_min_size(
+                Pos2::new(thumb_rect.max.x - 52.0, thumb_rect.min.y + 4.0),
+                Vec2::new(48.0, 15.0),
+            );
+            painter.rect_filled(span_rect, Rounding::same(3.0), Color32::from_rgb(245, 158, 11));
+            painter.text(
+                span_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                format!("⚡ {}x", vid.chunk_count),
+                egui::FontId::proportional(9.5),
+                Color32::BLACK,
+            );
+        }
+
         // 3. Card Footer (File metadata & rating)
         let mut cursor_y = thumb_rect.max.y + 6.0;
 

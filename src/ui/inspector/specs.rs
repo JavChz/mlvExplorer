@@ -1,6 +1,6 @@
 use crate::db::{Database, VideoRecord};
 use crate::ui::theme::*;
-use egui::{RichText, Ui};
+use egui::{Color32, RichText, Ui};
 
 pub struct TechnicalSpecs;
 
@@ -117,7 +117,15 @@ impl TechnicalSpecs {
                 ui.end_row();
 
                 ui.label("Spanned Chunks:");
-                ui.label(format!("{} file(s)", vid.chunk_count));
+                if vid.chunk_count > 1 {
+                    ui.label(
+                        RichText::new(format!("{} files (⚡ 5D3 Dual-Card Spanned)", vid.chunk_count))
+                            .color(Color32::from_rgb(245, 158, 11))
+                            .strong(),
+                    );
+                } else {
+                    ui.label("1 file (Standard Single Card)");
+                }
                 ui.end_row();
 
                 ui.label("File Size:");

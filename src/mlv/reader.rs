@@ -59,14 +59,44 @@ pub struct MlvClip {
 impl MlvClip {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, String> {
         let main = path.as_ref().to_path_buf();
+        let parent = main.parent().map(|p| p.to_path_buf());
+        let stem = main.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+
         let mut chunks = vec![main.clone()];
-        // Spanned recordings: NAME.M00, NAME.M01, ...
+
+        // 1. Direct sequential spanning: NAME.M00, NAME.M01, ... or NAME.m00, NAME.m01 ...
         for i in 0..100 {
-            let p = main.with_extension(format!("M{:02}", i));
-            if p.exists() {
-                chunks.push(p);
+            let p_upper = main.with_extension(format!("M{:02}", i));
+            let p_lower = main.with_extension(format!("m{:02}", i));
+            if p_upper.exists() {
+                chunks.push(p_upper);
+            } else if p_lower.exists() {
+                chunks.push(p_lower);
             } else {
                 break;
+            }
+        }
+
+        // 2. Discover companion files from dual card spanning in the same folder or parent folder
+        // (e.g. When user dumps CF card and SD card into the same folder or parent directory structure)
+        if let Some(ref dir) = parent {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let ep = entry.path();
+                    if ep.is_file() && !chunks.contains(&ep) {
+                        let is_mlv_ext = ep.extension().map_or(false, |ext| {
+                            let e = ext.to_string_lossy().to_uppercase();
+                            e == "MLV" || (e.starts_with('M') && e.len() == 3 && e[1..].chars().all(|c| c.is_ascii_digit()))
+                        });
+                        if is_mlv_ext {
+                            let ep_stem = ep.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                            // If base file stem matches or matches common dual-card naming prefixes
+                            if ep_stem.eq_ignore_ascii_case(&stem) {
+                                chunks.push(ep);
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -101,6 +131,7 @@ impl MlvClip {
         meta.video_guid = guid.unwrap_or(0);
         meta.chunk_count = valid_chunks.len() as u16;
         meta.frame_count = frames.len() as u32;
+        meta.is_dual_card = meta.chunk_count > 1;
         meta.file_size = valid_chunks
             .iter()
             .filter_map(|p| std::fs::metadata(p).ok())

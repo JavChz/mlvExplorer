@@ -75,17 +75,13 @@ impl TransportBar {
 
                 // Center: Transport Buttons
                 // Jump to Start
-                if ui.button(RichText::new("⏮").size(13.0)).on_hover_text("Jump to Start [Home]").clicked()
-                    || ui.input(|i| i.key_pressed(egui::Key::Home))
-                {
+                if ui.button(RichText::new("⏮").size(13.0)).on_hover_text("Jump to Start [Home]").clicked() {
                     view.current_frame = 0;
                     action = Some(PlayerAction::Seek(0));
                 }
 
                 // Step -1 Frame
-                if ui.button(RichText::new("◀").size(13.0)).on_hover_text("Step -1 Frame [Left Arrow]").clicked()
-                    || ui.input(|i| i.key_pressed(egui::Key::ArrowLeft))
-                {
+                if ui.button(RichText::new("◀").size(13.0)).on_hover_text("Step -1 Frame [Left Arrow]").clicked() {
                     if view.current_frame > 0 {
                         view.current_frame -= 1;
                         action = Some(PlayerAction::Seek(view.current_frame));
@@ -102,17 +98,13 @@ impl TransportBar {
                 let play_btn = egui::Button::new(RichText::new(play_icon).strong().size(13.0).color(Color32::WHITE))
                     .fill(play_bg);
 
-                if ui.add(play_btn).on_hover_text("Play / Pause [Space]").clicked()
-                    || ui.input(|i| i.key_pressed(egui::Key::Space))
-                {
+                if ui.add(play_btn).on_hover_text("Play / Pause [Space]").clicked() {
                     view.is_playing = !view.is_playing;
                     view.last_frame_time = Instant::now();
                 }
 
                 // Step +1 Frame
-                if ui.button(RichText::new("▶").size(13.0)).on_hover_text("Step +1 Frame [Right Arrow]").clicked()
-                    || ui.input(|i| i.key_pressed(egui::Key::ArrowRight))
-                {
+                if ui.button(RichText::new("▶").size(13.0)).on_hover_text("Step +1 Frame [Right Arrow]").clicked() {
                     if view.current_frame + 1 < total_frames {
                         view.current_frame += 1;
                         action = Some(PlayerAction::Seek(view.current_frame));
@@ -120,9 +112,7 @@ impl TransportBar {
                 }
 
                 // Jump to End
-                if ui.button(RichText::new("⏭").size(13.0)).on_hover_text("Jump to End [End]").clicked()
-                    || ui.input(|i| i.key_pressed(egui::Key::End))
-                {
+                if ui.button(RichText::new("⏭").size(13.0)).on_hover_text("Jump to End [End]").clicked() {
                     view.current_frame = total_frames.saturating_sub(1);
                     action = Some(PlayerAction::Seek(view.current_frame));
                 }

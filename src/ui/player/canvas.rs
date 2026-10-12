@@ -16,8 +16,9 @@ impl Canvas {
         video: &VideoRecord,
         playback: &Playback,
     ) {
-        // Reserve exactly 86.0px for the bottom professional timeline & transport bar
-        let bottom_height = 86.0;
+        // In normal mode, reserve 86.0px for bottom timeline.
+        // In clean fullscreen cinema mode (when overlay controls are hidden), use full height!
+        let bottom_height = if view.is_fullscreen && !view.show_overlay_controls { 0.0 } else { 86.0 };
         let canvas_height = (ui.available_height() - bottom_height).max(50.0);
         let canvas_size = Vec2::new(ui.available_width(), canvas_height);
         let (rect, canvas_response) = ui.allocate_exact_size(canvas_size, egui::Sense::click_and_drag());
@@ -41,14 +42,23 @@ impl Canvas {
             fit_w = fit_h * aspect;
         }
 
-        // Double-click canvas toggles Fit <-> 100%
+        // Media player style interactions:
+        // Double-click canvas toggles Fullscreen Cinema Mode
         if canvas_response.double_clicked() {
-            if view.zoom_mode == ZoomMode::Fit {
-                view.zoom_mode = ZoomMode::Scale(1.0);
-                view.pan_offset = Vec2::ZERO;
-            } else {
+            view.is_fullscreen = !view.is_fullscreen;
+            if view.is_fullscreen {
+                view.show_overlay_controls = false;
                 view.zoom_mode = ZoomMode::Fit;
                 view.pan_offset = Vec2::ZERO;
+            }
+        } else if canvas_response.clicked() {
+            if view.is_fullscreen {
+                // Single-click on canvas in fullscreen toggles transport/header HUD overlay
+                view.show_overlay_controls = !view.show_overlay_controls;
+            } else {
+                // Single-click on canvas in normal mode toggles play/pause like standard media players
+                view.is_playing = !view.is_playing;
+                view.last_frame_time = std::time::Instant::now();
             }
         }
 

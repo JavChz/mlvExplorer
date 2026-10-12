@@ -29,12 +29,46 @@ impl PlayerView {
         // Global hotkeys in Player mode
         if ui.input(|i| i.key_pressed(egui::Key::F)) {
             self.is_fullscreen = !self.is_fullscreen;
+            if self.is_fullscreen {
+                self.show_overlay_controls = false;
+                self.zoom_mode = ZoomMode::Fit;
+                self.pan_offset = egui::Vec2::ZERO;
+            }
             action = Some(PlayerAction::ToggleFullscreen);
         }
         if self.is_fullscreen && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.is_fullscreen = false;
             action = Some(PlayerAction::ToggleFullscreen);
+        } else if !self.is_fullscreen && ui.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::G)) {
+            action = Some(PlayerAction::BackToGrid);
         }
+
+        // Play / Pause and Frame Stepping
+        if ui.input(|i| i.key_pressed(egui::Key::Space)) {
+            self.is_playing = !self.is_playing;
+            self.last_frame_time = Instant::now();
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
+            if self.current_frame > 0 {
+                self.current_frame -= 1;
+                action = Some(PlayerAction::Seek(self.current_frame));
+            }
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
+            if self.current_frame + 1 < total_frames {
+                self.current_frame += 1;
+                action = Some(PlayerAction::Seek(self.current_frame));
+            }
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Home)) {
+            self.current_frame = 0;
+            action = Some(PlayerAction::Seek(0));
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::End)) {
+            self.current_frame = total_frames.saturating_sub(1);
+            action = Some(PlayerAction::Seek(self.current_frame));
+        }
+
         if ui.input(|i| i.key_pressed(egui::Key::Z)) {
             if self.zoom_mode == ZoomMode::Fit {
                 self.zoom_mode = ZoomMode::Scale(1.0);
@@ -58,14 +92,16 @@ impl PlayerView {
             self.zoom_mode = ZoomMode::Scale((cur * 0.8).max(0.15));
         }
 
-        // 1. Studio Player Header Bar
-        if let Some(header_act) = HeaderBar::show(self, ui, video, playback) {
-            action = Some(header_act);
-        }
+        // 1. Studio Player Header Bar (Hidden in pure fullscreen cinema mode unless HUD is requested)
+        if !self.is_fullscreen || self.show_overlay_controls {
+            if let Some(header_act) = HeaderBar::show(self, ui, video, playback) {
+                action = Some(header_act);
+            }
 
-        ui.add_space(2.0);
-        ui.separator();
-        ui.add_space(2.0);
+            ui.add_space(2.0);
+            ui.separator();
+            ui.add_space(2.0);
+        }
 
         // Advance frames if currently playing
         let effective_fps = (video.fps * self.playback_speed).max(1.0);
@@ -101,11 +137,12 @@ impl PlayerView {
         // 2. Main Viewport Canvas (Cinema Screen)
         Canvas::show(self, ui, video, playback);
 
-        ui.add_space(4.0);
-
-        // 3. Bottom Studio Console: Full Playbar + Transport Controls
-        if let Some(transport_act) = TransportBar::show(self, ui, video, playback, total_frames) {
-            action = Some(transport_act);
+        // 3. Bottom Studio Console: Full Playbar + Transport Controls (Hidden in pure fullscreen unless HUD is on)
+        if !self.is_fullscreen || self.show_overlay_controls {
+            ui.add_space(4.0);
+            if let Some(transport_act) = TransportBar::show(self, ui, video, playback, total_frames) {
+                action = Some(transport_act);
+            }
         }
 
         action
