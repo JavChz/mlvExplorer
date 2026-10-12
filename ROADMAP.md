@@ -1,10 +1,10 @@
 ## Ingestion module
 
-Add the option to ingest .mlv from an SD and CF Card to the catalog and copy the files to the library folder.
+Add the option to ingest .mlv from an SD and CF Card to the catalog and copy the files to the computer (specially important for the 5D III card span files, that requiere to live in the same folders). Let the user chose the folder to copy with a wizard. Make sure the files are copied (and not only referenced). In the case of the 5D III files, make sure that the span files are copied alongside the main file, inside the same folder.
 
 ## Integration with MLVApp
 
-Being able to open a whole catalog into MLVApp.
+Being able to open a whole catalog, keyword or selection of clips into MLVApp.
 
 ## UI Improvments
 
