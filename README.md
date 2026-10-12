@@ -104,6 +104,78 @@ The resulting executable will be located at:
 
 ---
 
+## 📦 Building Releases & Packaging Pipeline
+
+MLV Explorer includes an automated GitHub Actions release pipeline as well as standalone scripts to produce distribution packages for **Windows x64** (`.zip`) and **Linux** (`.tar.gz` and `.AppImage`).
+
+### 1. Setting & Bumping the Version Number
+The canonical version number is configured in **[`Cargo.toml`](file:///d:/Dev/githubprojects/mlvExplorer/Cargo.toml)** on line 3:
+```toml
+[package]
+name = "mlv-explorer"
+version = "0.0.1"   # <-- Edit this number and increment for every new release
+```
+*Note*: Rust's Cargo package manager enforces [SemVer 2.0.0](https://semver.org/), so versions follow `MAJOR.MINOR.PATCH` format (e.g. `0.0.1`, `0.0.2`, `0.1.0`). Changing this single line automatically updates the internal app version, the **Help ➔ About** dialog, and the build packaging scripts.
+
+### 2. Automated GitHub Actions Release Pipeline
+Whenever you are ready to publish a new release to GitHub:
+```bash
+# 1. Update the version in Cargo.toml and commit
+git add Cargo.toml
+git commit -m "chore: bump version to v0.0.1"
+git push origin main
+
+# 2. Tag the commit and push the tag
+git tag v0.0.1
+git push origin v0.0.1
+```
+The GitHub Actions pipeline (`.github/workflows/release.yml`) will automatically:
+1. Build optimized binaries on Windows and Linux.
+2. Package:
+   - `mlv-explorer-v0.0.1-windows-x64.zip` (containing `mlv-explorer.exe`, `README.md`, `LICENSE`)
+   - `mlv-explorer-v0.0.1-linux-x64.tar.gz` (containing `mlv-explorer`, `README.md`, `LICENSE`)
+   - `mlv-explorer-v0.0.1-x86_64.AppImage` (standalone portable Linux bundle)
+3. Create a GitHub Release with auto-generated changelog notes and attach all 3 distribution assets.
+
+You can also trigger builds manually without a tag via **GitHub Actions ➔ Release Build Pipeline ➔ Run workflow**.
+
+### 3. Local Release Packaging Commands
+To package releases locally on your machine:
+
+#### **Windows (PowerShell)**:
+```powershell
+# Run the packaging script
+.\scripts\package-release.ps1
+
+# The distribution archive will be generated at:
+# dist/mlv-explorer-v0.0.1-windows-x64.zip
+```
+
+#### **Linux (Bash)**:
+```bash
+# Make script executable and run
+chmod +x ./scripts/package-release.sh
+./scripts/package-release.sh
+
+# The distribution archives will be generated in dist/:
+# dist/mlv-explorer-v0.0.1-linux-x64.tar.gz
+# dist/mlv-explorer-v0.0.1-x86_64.AppImage (if appimagetool is installed)
+```
+
+#### **Publishing Local Builds with GitHub CLI**:
+```bash
+gh release create v0.0.1 dist/* --title "Release v0.0.1" --generate-notes
+```
+
+---
+
+## 🔄 Software Updates
+
+MLV Explorer features an in-app software updater:
+- Open **Help ➔ Check for Updates...** from the top menu bar.
+- The app checks GitHub Releases for new versions without freezing the interface.
+- If a new version is detected, the dialog displays release notes, compares versions, and allows you to download the appropriate OS package (`.zip` on Windows, `.AppImage` on Linux) directly with live download progress.
+
 ## 🏗️ Architecture & Module Organization
 
 The project is structured into modular crates and subsystems for maintainability:

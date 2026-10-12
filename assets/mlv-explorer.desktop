@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=MLV Explorer
+GenericName=Magic Lantern RAW Video Browser
+Comment=High-performance photo browser-style catalog, player, and organizer for Magic Lantern RAW Videos (.mlv)
+Exec=mlv-explorer %F
+Icon=mlv-explorer
+Terminal=false
+Categories=AudioVideo;Video;Graphics;Viewer;
+MimeType=video/x-raw;application/x-mlv;
+StartupWMClass=MLV Explorer
