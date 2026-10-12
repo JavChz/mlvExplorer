@@ -4,7 +4,7 @@ A photo catalog-style browser, player, and organizer for **Magic Lantern RAW Vid
 
 Designed for people who shoot with Magic Lantern on Canon DSLRs/Mirrorless (5D Mark III, EOS M, 70D, 6D, 5D Mark II, etc.) and need an fast, responsive tool to ingest, organize, slate, review, and cull raw takes before sending selected clips into [MLV App](https://github.com/ilia3101/MLV-App) for final processing.
 
-This is a hobbie personal project and I won't have time to review PRs, if you want to improve on this. Feel free to fork the repo. My apologies in advance. Also note that this project is a work in progress and may be unstable at times.
+This is a hobbie personal project and I won't have time to review PRs, if you want to improve on this. Feel free to fork the repo. My apologies in advance. Also note that this project is a work in progress and may be unstable at times. Haven't tested outside of Windows 11, but in theory should be portable to any system with a modern GPU.
 
 ---
 
