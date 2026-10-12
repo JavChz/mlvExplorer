@@ -101,6 +101,14 @@ impl TransportBar {
                 if ui.add(play_btn).on_hover_text("Play / Pause [Space]").clicked() {
                     view.is_playing = !view.is_playing;
                     view.last_frame_time = Instant::now();
+                    let time_sec = view.current_frame as f32 / video.fps.max(1.0);
+                    if let Ok(mut a) = playback.audio.lock() {
+                        if view.is_playing {
+                            a.play(time_sec);
+                        } else {
+                            a.pause();
+                        }
+                    }
                 }
 
                 // Step +1 Frame
@@ -140,6 +148,42 @@ impl TransportBar {
                     if ui.selectable_label(is_active, format!("{}x", spd)).clicked() {
                         view.playback_speed = spd;
                     }
+                }
+
+                // Audio Volume & Mute Controls
+                ui.separator();
+                let has_audio = playback.audio.lock().map(|a| a.has_audio()).unwrap_or(false);
+                if has_audio {
+                    let mute_icon = if view.is_muted || view.volume == 0.0 { "🔇" } else if view.volume < 0.5 { "🔉" } else { "🔊" };
+                    if ui.small_button(mute_icon).on_hover_text("Toggle Mute").clicked() {
+                        view.is_muted = !view.is_muted;
+                        if let Ok(mut a) = playback.audio.lock() {
+                            a.set_muted(view.is_muted);
+                        }
+                    }
+
+                    let mut vol = view.volume;
+                    if ui.add_sized([64.0, 18.0], egui::Slider::new(&mut vol, 0.0..=1.0).show_value(false))
+                        .on_hover_text(format!("Audio Volume: {}%", (view.volume * 100.0).round()))
+                        .changed()
+                    {
+                        view.volume = vol;
+                        if view.is_muted && vol > 0.0 {
+                            view.is_muted = false;
+                        }
+                        if let Ok(mut a) = playback.audio.lock() {
+                            a.set_volume(view.volume);
+                            a.set_muted(view.is_muted);
+                        }
+                    }
+
+                    if let Ok(a) = playback.audio.lock() {
+                        if let Some(info) = a.audio_info() {
+                            ui.label(RichText::new(info).size(10.0).color(Color32::from_rgb(147, 197, 253)));
+                        }
+                    }
+                } else {
+                    ui.label(RichText::new("🔇 No Audio Track").size(10.0).color(TEXT_MUTED));
                 }
 
                 // Right side: Quick Rating & Pick buttons on player bar!

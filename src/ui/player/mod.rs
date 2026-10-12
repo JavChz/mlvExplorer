@@ -47,6 +47,14 @@ impl PlayerView {
         if ui.input(|i| i.key_pressed(egui::Key::Space)) {
             self.is_playing = !self.is_playing;
             self.last_frame_time = Instant::now();
+            let time_sec = self.current_frame as f32 / video.fps.max(1.0);
+            if let Ok(mut a) = playback.audio.lock() {
+                if self.is_playing {
+                    a.play(time_sec);
+                } else {
+                    a.pause();
+                }
+            }
         }
         if ui.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
             if self.current_frame > 0 {
@@ -125,8 +133,14 @@ impl PlayerView {
                         self.current_frame += 1;
                     } else if self.is_looping {
                         self.current_frame = 0;
+                        if let Ok(mut a) = playback.audio.lock() {
+                            a.seek(0.0, true);
+                        }
                     } else {
                         self.is_playing = false;
+                        if let Ok(mut a) = playback.audio.lock() {
+                            a.pause();
+                        }
                     }
                     action = Some(PlayerAction::Seek(self.current_frame));
                 }

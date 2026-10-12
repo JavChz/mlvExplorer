@@ -37,6 +37,32 @@ impl FrameSource {
         self.clip.frames.len()
     }
 
+    /// Read all AUDF blocks across chunks and return linear 16-bit PCM samples
+    pub fn load_audio_pcm(&self) -> Option<(super::types::AudioMetadata, Vec<i16>)> {
+        if self.clip.audio_frames.is_empty() {
+            return None;
+        }
+        let audio_meta = self.clip.meta.audio.clone().unwrap_or_default();
+        let mut samples = Vec::new();
+
+        for af in &self.clip.audio_frames {
+            let mut raw = vec![0u8; af.size as usize];
+            if self.read_at(af.chunk as usize, af.offset, &mut raw).is_ok() {
+                let sample_count = raw.len() / 2;
+                for i in 0..sample_count {
+                    let s = i16::from_le_bytes([raw[i * 2], raw[i * 2 + 1]]);
+                    samples.push(s);
+                }
+            }
+        }
+
+        if samples.is_empty() {
+            None
+        } else {
+            Some((audio_meta, samples))
+        }
+    }
+
     fn read_at(&self, chunk: usize, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
         let f = &self.files[chunk];
         #[cfg(windows)]

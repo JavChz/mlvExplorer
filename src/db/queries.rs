@@ -160,6 +160,7 @@ impl<'a> Queries<'a> {
                    v.aperture_fstop, v.iso, v.shutter_speed, v.white_balance_kelvin,
                    v.date_recorded, v.imported_at, v.rating, v.flag, v.notes, v.color_label,
                    v.codec, v.has_audio, v.chunk_count, v.stretch_factor,
+                   v.scene, v.shot, v.take, v.location, v.camera_unit,
                    (SELECT GROUP_CONCAT(t.name, '\u001f') FROM video_tags vt JOIN tags t ON t.id = vt.tag_id WHERE vt.video_id = v.id) AS tags
             FROM videos v
             WHERE 1=1
@@ -171,6 +172,7 @@ impl<'a> Queries<'a> {
         if !search.is_empty() {
             query.push_str(
                 " AND (v.file_name LIKE ?1 OR v.camera_name LIKE ?1 OR v.lens_name LIKE ?1 OR v.notes LIKE ?1 \
+                 OR v.scene LIKE ?1 OR v.location LIKE ?1 \
                  OR v.id IN (SELECT vt.video_id FROM video_tags vt JOIN tags t ON t.id = vt.tag_id WHERE t.name LIKE ?1))",
             );
             p.push(Box::new(format!("%{search}%")));
@@ -207,7 +209,7 @@ impl<'a> Queries<'a> {
         let mut stmt = self.conn.prepare(&query)?;
         let refs: Vec<&dyn rusqlite::ToSql> = p.iter().map(|b| b.as_ref()).collect();
         let rows = stmt.query_map(refs.as_slice(), |row| {
-            let tags: Option<String> = row.get(28)?;
+            let tags: Option<String> = row.get(33)?;
             Ok(VideoRecord {
                 id: row.get(0)?,
                 file_path: row.get(1)?,
@@ -237,6 +239,11 @@ impl<'a> Queries<'a> {
                 has_audio: row.get::<_, i64>(25)? != 0,
                 chunk_count: row.get(26)?,
                 stretch_factor: row.get::<_, Option<f64>>(27)?.map(|v| v as f32).unwrap_or(1.0),
+                scene: row.get(28)?,
+                shot: row.get(29)?,
+                take: row.get(30)?,
+                location: row.get(31)?,
+                camera_unit: row.get(32)?,
                 tags: tags
                     .map(|s| s.split('\u{1f}').map(|t| t.to_string()).collect())
                     .unwrap_or_default(),
@@ -299,6 +306,22 @@ impl<'a> Queries<'a> {
 
     pub fn set_notes(&self, video_id: i64, notes: &str) -> Result<()> {
         self.conn.execute("UPDATE videos SET notes = ?1 WHERE id = ?2", params![notes, video_id])?;
+        Ok(())
+    }
+
+    pub fn set_production_slate(
+        &self,
+        video_id: i64,
+        scene: Option<&str>,
+        shot: Option<&str>,
+        take: Option<&str>,
+        location: Option<&str>,
+        camera_unit: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE videos SET scene = ?1, shot = ?2, take = ?3, location = ?4, camera_unit = ?5 WHERE id = ?6",
+            params![scene, shot, take, location, camera_unit, video_id],
+        )?;
         Ok(())
     }
 
@@ -414,6 +437,14 @@ impl<'a> Queries<'a> {
             let _ = self.set_rating(row_id, vid.rating);
             let _ = self.set_flag(row_id, vid.flag);
             let _ = self.set_notes(row_id, &vid.notes);
+            let _ = self.set_production_slate(
+                row_id,
+                vid.scene.as_deref(),
+                vid.shot.as_deref(),
+                vid.take.as_deref(),
+                vid.location.as_deref(),
+                vid.camera_unit.as_deref(),
+            );
             if vid.stretch_factor > 0.05 {
                 let _ = self.set_stretch_factor(row_id, vid.stretch_factor);
             }

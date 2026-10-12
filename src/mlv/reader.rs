@@ -53,6 +53,7 @@ impl<'a> Rd<'a> {
 pub struct MlvClip {
     pub meta: MlvMetadata,
     pub frames: Vec<FrameRef>,
+    pub audio_frames: Vec<AudioChunkRef>,
     pub chunks: Vec<PathBuf>,
 }
 
@@ -105,11 +106,19 @@ impl MlvClip {
             ..Default::default()
         };
         let mut frames: Vec<FrameRef> = Vec::new();
+        let mut audio_frames: Vec<AudioChunkRef> = Vec::new();
         let mut guid: Option<u64> = None;
         let mut valid_chunks = Vec::new();
 
         for (ci, chunk_path) in chunks.iter().enumerate() {
-            match scan_chunk(chunk_path, valid_chunks.len() as u16, &mut meta, &mut frames, ci == 0) {
+            match scan_chunk(
+                chunk_path,
+                valid_chunks.len() as u16,
+                &mut meta,
+                &mut frames,
+                &mut audio_frames,
+                ci == 0,
+            ) {
                 Ok(g) => {
                     if let Some(expected) = guid {
                         if g != expected {
@@ -127,6 +136,8 @@ impl MlvClip {
 
         frames.sort_by_key(|f| f.frame_number);
         frames.dedup_by_key(|f| f.frame_number);
+
+        audio_frames.sort_by_key(|a| a.timestamp);
 
         meta.video_guid = guid.unwrap_or(0);
         meta.chunk_count = valid_chunks.len() as u16;
@@ -147,6 +158,7 @@ impl MlvClip {
         Ok(Self {
             meta,
             frames,
+            audio_frames,
             chunks: valid_chunks,
         })
     }
@@ -158,6 +170,7 @@ fn scan_chunk(
     chunk_idx: u16,
     meta: &mut MlvMetadata,
     frames: &mut Vec<FrameRef>,
+    audio_frames: &mut Vec<AudioChunkRef>,
     is_main: bool,
 ) -> Result<u64, String> {
     let file = File::open(path).map_err(|e| format!("Cannot open {}: {e}", path.display()))?;
@@ -209,7 +222,7 @@ fn scan_chunk(
                     break;
                 }
             }
-            b"MLVI" | b"RAWI" | b"RAWC" | b"IDNT" | b"LENS" | b"EXPO" | b"RTCI" | b"WBAL" | b"DISP" => {
+            b"MLVI" | b"RAWI" | b"RAWC" | b"IDNT" | b"LENS" | b"EXPO" | b"RTCI" | b"WBAL" | b"DISP" | b"WAVI" => {
                 buf.clear();
                 buf.extend_from_slice(&hdr);
                 buf.resize(size as usize, 0);
@@ -223,7 +236,27 @@ fn scan_chunk(
             }
             b"AUDF" => {
                 meta.has_audio = true;
-                if r.seek_relative(size as i64 - 16).is_err() {
+                let timestamp = u64::from_le_bytes([
+                    hdr[8], hdr[9], hdr[10], hdr[11], hdr[12], hdr[13], hdr[14], hdr[15],
+                ]);
+                let mut sub = [0u8; 8];
+                if r.read_exact(&mut sub).is_err() {
+                    break;
+                }
+                let mut s = Rd::new(&sub, 0);
+                let frame_number = s.u32();
+                let frame_space = s.u32() as u64;
+                let data_off = offset + 24 + frame_space;
+                let data_size = size.saturating_sub(24 + frame_space);
+                audio_frames.push(AudioChunkRef {
+                    timestamp,
+                    frame_number,
+                    chunk: chunk_idx,
+                    offset: data_off,
+                    size: data_size as u32,
+                });
+                let skip = size as i64 - 24;
+                if r.seek_relative(skip).is_err() {
                     break;
                 }
             }
@@ -394,6 +427,21 @@ fn parse_meta_block(ty: &[u8; 4], b: &[u8], m: &mut MlvMetadata, is_main: bool) 
             if num > 0 && den > 0 {
                 m.pixel_aspect_ratio = num as f32 / den as f32;
             }
+        }
+        b"WAVI" => {
+            let format = r.u16();
+            let channels = r.u16();
+            let sampling_rate = r.u32();
+            let _bytes_per_sec = r.u32();
+            let _block_align = r.u16();
+            let bits_per_sample = r.u16();
+            m.has_audio = true;
+            m.audio = Some(AudioMetadata {
+                format,
+                channels: if channels == 0 { 2 } else { channels },
+                sample_rate: if sampling_rate == 0 { 48000 } else { sampling_rate },
+                bits_per_sample: if bits_per_sample == 0 { 16 } else { bits_per_sample },
+            });
         }
         _ => {}
     }

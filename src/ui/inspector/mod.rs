@@ -2,7 +2,7 @@ pub mod sections;
 pub mod specs;
 pub mod types;
 
-pub use sections::{NotesSection, OrganizationSection, TagsSection};
+pub use sections::{NotesSection, OrganizationSection, ProductionSlateSection, TagsSection};
 pub use specs::{LocationSection, TechnicalSpecs};
 pub use types::{InspectorAction, Inspector};
 
@@ -36,6 +36,11 @@ impl Inspector {
             if let Some(org_act) = OrganizationSection::show(ui, vid, db) {
                 action = Some(org_act);
             }
+
+            ui.add_space(8.0);
+
+            // Cinema Production Slate (Scene, Shot, Take, Unit, Location)
+            ProductionSlateSection::show(ui, vid, db);
 
             ui.add_space(8.0);
 

@@ -48,6 +48,22 @@ impl HeaderBar {
                 ui.label(RichText::new(&video.camera_name).small().color(TEXT_MUTED));
             }
 
+            if let Some(slate) = video.slate_label() {
+                ui.label(RichText::new("·").color(TEXT_MUTED));
+                let mut full_slate = format!("🎬 {}", slate);
+                if let Some(ref loc) = video.location {
+                    if !loc.trim().is_empty() {
+                        full_slate.push_str(&format!(" ({})", loc.trim()));
+                    }
+                }
+                ui.label(
+                    RichText::new(full_slate)
+                        .small()
+                        .strong()
+                        .color(Color32::from_rgb(245, 158, 11)),
+                );
+            }
+
             // Right-aligned Toolbar: Realtime status, Stretch, Fullscreen, Zoom, WB, Exposure, MLVApp
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button(RichText::new("🎬 Open in MLVApp").small().strong().color(Color32::from_rgb(243, 244, 246)))

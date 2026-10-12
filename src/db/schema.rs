@@ -64,6 +64,11 @@ pub fn init(conn: &Connection) -> Result<bool> {
         "ALTER TABLE videos ADD COLUMN has_audio INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE videos ADD COLUMN chunk_count INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE videos ADD COLUMN stretch_factor REAL NOT NULL DEFAULT 1.0",
+        "ALTER TABLE videos ADD COLUMN scene TEXT",
+        "ALTER TABLE videos ADD COLUMN shot TEXT",
+        "ALTER TABLE videos ADD COLUMN take TEXT",
+        "ALTER TABLE videos ADD COLUMN location TEXT",
+        "ALTER TABLE videos ADD COLUMN camera_unit TEXT",
     ] {
         let _ = conn.execute(sql, []);
     }

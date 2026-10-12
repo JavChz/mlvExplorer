@@ -238,6 +238,12 @@ impl MlvExplorerApp {
         if input.key_pressed(egui::Key::G) {
             self.view_mode = ViewMode::Grid;
             self.player_view.is_fullscreen = false;
+            self.player_view.is_playing = false;
+            if let Some((_, ref pb)) = self.current_playback {
+                if let Ok(mut a) = pb.audio.lock() {
+                    a.pause();
+                }
+            }
         }
         if input.key_pressed(egui::Key::E) || (self.view_mode == ViewMode::Grid && input.key_pressed(egui::Key::Enter)) {
             if self.selected_video_idx.is_some() {
@@ -516,6 +522,7 @@ impl eframe::App for MlvExplorerApp {
                         &self.videos,
                         self.selected_video_idx,
                         &mut self.thumb_mgr,
+                        &mut self.filter.sort,
                     ) {
                         match action {
                             GridAction::Select(idx) => {
@@ -547,6 +554,9 @@ impl eframe::App for MlvExplorerApp {
                                     self.open_in_mlv_app(&path);
                                 }
                             }
+                            GridAction::SortChanged => {
+                                self.reload_catalog();
+                            }
                         }
                     }
                 }
@@ -561,11 +571,19 @@ impl eframe::App for MlvExplorerApp {
                                             PlayerAction::BackToGrid => {
                                                 self.view_mode = ViewMode::Grid;
                                                 self.player_view.is_fullscreen = false;
+                                                self.player_view.is_playing = false;
+                                                if let Ok(mut a) = pb.audio.lock() {
+                                                    a.pause();
+                                                }
                                                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
                                                 ctx.request_repaint();
                                             }
                                             PlayerAction::Seek(frame) => {
                                                 pb.set_target(frame, self.player_view.is_looping);
+                                                let time_sec = frame as f32 / vid.fps.max(1.0);
+                                                if let Ok(mut a) = pb.audio.lock() {
+                                                    a.seek(time_sec, self.player_view.is_playing);
+                                                }
                                             }
                                             PlayerAction::SetRating(rating) => {
                                                 let id = vid.id;

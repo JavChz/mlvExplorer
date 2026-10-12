@@ -51,6 +51,16 @@ pub struct VideoRecord {
     pub chunk_count: u16,
     #[serde(default = "default_stretch_factor")]
     pub stretch_factor: f32,
+    #[serde(default)]
+    pub scene: Option<String>,
+    #[serde(default)]
+    pub shot: Option<String>,
+    #[serde(default)]
+    pub take: Option<String>,
+    #[serde(default)]
+    pub location: Option<String>,
+    #[serde(default)]
+    pub camera_unit: Option<String>,
     pub tags: Vec<String>,
 }
 
@@ -59,6 +69,26 @@ fn default_stretch_factor() -> f32 {
 }
 
 impl VideoRecord {
+    pub fn slate_label(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(ref s) = self.scene {
+            let s_trim = s.trim();
+            if !s_trim.is_empty() { parts.push(format!("Sc {}", s_trim)); }
+        }
+        if let Some(ref sh) = self.shot {
+            let sh_trim = sh.trim();
+            if !sh_trim.is_empty() { parts.push(format!("Sh {}", sh_trim)); }
+        }
+        if let Some(ref tk) = self.take {
+            let tk_trim = tk.trim();
+            if !tk_trim.is_empty() { parts.push(format!("Tk {}", tk_trim)); }
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" · "))
+        }
+    }
     pub fn duration_tc(&self) -> String {
         let t = self.duration_seconds.max(0.0);
         let m = (t / 60.0) as u32;

@@ -31,6 +31,8 @@ pub struct PlayerView {
     pub pan_offset: Vec2,
     pub is_fullscreen: bool,
     pub show_overlay_controls: bool,
+    pub volume: f32,
+    pub is_muted: bool,
     pub last_frame_time: Instant,
     pub last_shown_frame: Option<Arc<crate::mlv::DecodedFrame>>,
 }
@@ -49,6 +51,8 @@ impl Default for PlayerView {
             pan_offset: Vec2::ZERO,
             is_fullscreen: false,
             show_overlay_controls: true,
+            volume: 1.0,
+            is_muted: false,
             last_frame_time: Instant::now(),
             last_shown_frame: None,
         }

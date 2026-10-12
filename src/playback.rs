@@ -24,6 +24,7 @@ struct Shared {
 
 pub struct Playback {
     pub source: Arc<FrameSource>,
+    pub audio: Arc<Mutex<crate::audio::AudioEngine>>,
     shared: Arc<Shared>,
 }
 
@@ -46,6 +47,14 @@ impl Playback {
             }),
             cv: Condvar::new(),
         });
+
+        // Initialize Audio Engine
+        let mut audio_engine = crate::audio::AudioEngine::new();
+        if let Some((audio_meta, pcm_samples)) = source.load_audio_pcm() {
+            audio_engine.load(audio_meta, pcm_samples);
+        }
+        let audio = Arc::new(Mutex::new(audio_engine));
+
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4)
@@ -56,7 +65,7 @@ impl Playback {
             let ctx = ctx.clone();
             std::thread::spawn(move || worker(shared, source, ctx));
         }
-        Self { source, shared }
+        Self { source, audio, shared }
     }
 
     pub fn frame_count(&self) -> usize {
@@ -137,6 +146,10 @@ impl Drop for Playback {
         s.quit = true;
         s.cache.clear();
         self.shared.cv.notify_all();
+        drop(s);
+        if let Ok(mut audio) = self.audio.lock() {
+            audio.stop();
+        }
     }
 }
 

@@ -4,6 +4,8 @@ version = "0.2.0"
 edition = "2021"
 authors = ["mlvExplorer Contributors"]
 description = "High-performance Photo browser-style catalog, player, and organizer for Magic Lantern RAW Videos (.mlv)"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/javch/mlvExplorer"
 default-run = "mlv-explorer"
 
 [dependencies]
@@ -34,6 +36,7 @@ rfd = "0.15"
 open = "5.3"
 chrono = { version = "0.4", features = ["serde"] }
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
+rodio = "0.19"
 
 [profile.release]
 opt-level = 3

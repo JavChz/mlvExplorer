@@ -1,99 +1,161 @@
 # MLV Explorer 🎬
 
-A high-performance **Photo browser-style RAW video library, player, and catalog manager** for Magic Lantern Video (`.mlv`) files, built with **Rust**, **egui/eframe**, and **SQLite**.
+A high-performance photo catalog-style browser, player, and organizer for **Magic Lantern RAW Video (`.mlv`)** files, written in **Rust** with **egui/eframe** and **SQLite**.
 
-Designed specifically for filmmakers and archival workflows to rapidly ingest, browse, inspect, tag, and play back Magic Lantern RAW videos without waiting for heavy NLE transcoding.
-
----
-
-## 🌟 Key Features
-
-- **Photo browser-Style Workflow**:
-  - **Grid View (Contact Sheet)**: Smooth thumbnail grid with interactive card zoom, duration tags, resolution pills, star ratings, and pick/reject status flags.
-  - **Loupe / Player View**: Full-screen single video player with interactive timeline scrubber, frame stepping (`Left`/`Right` arrow keys), loop playback, and timecode display.
-  - **Navigator Sidebar**: Instant views for _All Videos_, _Flagged / Picks_, _Rejected_, and _Untagged_.
-  - **Metadata & Inspector Panel**: Deep EXIF & RAW metadata extraction: Camera model, serial number, lens name, focal length, aperture ($f$-stop), shutter speed, ISO, kelvin white balance, frame rate, and raw bit depth.
-  - **Tagging & Notes**: Custom tag chips (`#b-roll`, `#interview`), 1-5 star ratings, pick/reject status flags, and per-shot notes.
-  - **Filter Bar**: Real-time filtering by Camera, Lens, ISO range, Star rating ($\ge 3\star$), and Pick flags.
-  - **Drag-and-Drop Ingestion**: Drop single `.mlv` files or entire folder trees directly into the window for automatic scanning and indexing.
-- **SQLite Catalog with Full Backup & Import**:
-  - **Atomic Live Database Backup (`.db`)**: Creates a complete binary backup snapshot while the app is actively running via SQLite's native backup API.
-  - **Portable JSON Export / Import (`.json`)**: Export and merge catalogs across different drives, editing machines, or operating systems.
-- **Fast Raw Engine**:
-  - Direct block parser for `MLVI`, `RAWI`, `VIDF`, `LENS`, `EXPO`, `RTCI`, `IDNT`, `WBAL`.
-  - Half-size Bayer demosaic binning ($2 \times 2$ quad to RGB) for instant thumbnail generation with zero moiré or interpolation lag.
+Designed for cinematographers and filmmakers who shoot with Magic Lantern on Canon DSLRs (5D Mark III, EOS M, 70D, 6D, 5D Mark II, etc.) and need an ultra-fast, responsive tool to ingest, organize, slate, review, and cull raw takes before sending selected clips into [MLV App](https://github.com/ilia3101/MLV-App) or DaVinci Resolve for final processing.
 
 ---
 
-## 🔬 Research: MLV GPU Acceleration & Existing Projects
+## 🌟 Features
 
-### 1. Existing Open-Source Projects
+### 🖼️ Photo Browser-Style Catalog & Ingestion
+- **Contact Sheet Grid**: High-density thumbnail grid with smooth card scaling, aspect-ratio preservation, duration overlays, resolution badges, audio presence indicators, star ratings, and pick/reject flags.
+- **Calendar Day Grouping**: Organize footage chronologically by shooting days with collapsible calendar headers (`Saturday, October 11, 2026 · 14 clips · 12.4 GB · 05:22`) and ascending/descending capture-date sorting.
+- **Drag-and-Drop Ingestion**: Drop single `.mlv` clips or multi-gigabyte directories directly onto the window. Includes recursive discovery, duplicate detection, and a background import progress bar.
+- **Non-Destructive SQLite Catalog**: Instant database-backed filtering and search. Includes live atomic database backups (`.db`) and portable JSON catalog export/import across multiple editing machines.
 
-- **[MLV-App](https://github.com/ilia3101/MLV-App)** (C++/Qt/Cocoa):
-  - The standard tool for MLV grading and export.
-  - Traditionally CPU-bound for demosaicing (AMaZE, LMMSE, Bilinear), using OpenGL primarily for viewport blitting.
-  - Community forks like **MLV-App-GPU** experiment with OpenCL/GL compute shaders, and the mobile port features OpenGL ES compute demosaicing.
-- **[vkdt](https://github.com/hanatos/vkdt)** (Vulkan / GLSL Compute):
-  - Created by Johannes Hanika (original creator of _darktable_).
-  - A modern RAW processing engine that processes Magic Lantern MLV video directly on the GPU using Vulkan compute shaders. Highly recommended reference for Vulkan pipeline design.
-- **[Fast CinemaDNG / Fast MLV](https://www.fastcompression.com)** (CUDA):
-  - Commercial / specialized CUDA engine for NVIDIA GPUs. Achieves real-time 200+ FPS playback by carrying out 12/14-bit unpacking, demosaicing, and tone curves entirely within NVIDIA CUDA cores.
-- **[LibMLV](https://github.com/ilia3101/LibMLV)**:
-  - C parser library with an explicit roadmap towards a Rust rewrite.
+### 🎬 Cinema Production Slate & Metadata
+- **Standard Industry Slate**: Assign and edit production metadata per take:
+  - **Scene**, **Shot**, **Take**
+  - **Camera Unit** (e.g., `A-Cam`, `B-Cam`)
+  - **Location**
+- **Visual Slate Badges**: Slate labels (`SC 12A / SH 2 / TK 4 · A-Cam`) are rendered directly on grid cards and the player header.
+- **Deep Hardware EXIF Extraction**: Reads camera model, camera serial number, lens name, focal length, aperture ($f$-stop), shutter speed, ISO, kelvin color temperature, frame rate, and raw bit depth.
+- **Culling & Rating**: Star ratings (1 to 5 stars), Pick (`P`) / Reject (`X`) / Neutral (`U`) flags, customizable tags (`#interview`, `#b-roll`), and freeform shot notes.
 
-### 2. Recommended GPU Architecture for Rust + egui
+### 🎥 Player & Audio Sync
+- **Synchronized Audio Playback**: Linear PCM audio parsing (`WAVI` & `AUDF` blocks) with real-time synchronized audio output via `rodio`, timeline scrubbing, volume slider, mute toggle, and audio format badges (`48 kHz / 16-bit stereo`).
+- **Cinema Fullscreen Experience**: Press **`F`** to toggle immersive borderless fullscreen video mode with auto-hiding transport HUD, or double-click anywhere on the video canvas.
+- **Aspect Ratio & Anamorphic De-squeeze**: Automatic format detection and manual overrides for standard (1:1), anamorphic (1.33x, 1.5x, 1.75x, 2.0x), and Magic Lantern 3x1 / 1x3 anamorphic crop modes.
+- **Color Preview & Exposure**: High-speed Bayer demosaicing with sensor black/white normalization, camera color matrix conversion to linear sRGB, daylight white balance, and real-time exposure & white balance adjustment sliders.
+- **One-Click Bridge to MLV App**: Dedicated **"Open in MLVApp"** action to instantly launch the current clip in [MLV App](https://github.com/ilia3101/MLV-App) for deep grading, raw export, and CinemaDNG/ProRes conversion.
 
-For high-performance cross-platform playback without requiring CUDA toolkit installations:
-
-- **`wgpu` (WebGPU for native Rust)**:
-  - `eframe` natively supports `wgpu`.
-  - Works on **NVIDIA**, AMD, and Intel GPUs via Vulkan (Linux/Windows) and DirectX 12 (Windows).
-  - **Pipeline**:
-    1. Upload unpacked 16-bit Bayer sensor data to GPU texture (`TextureFormat::R16Uint`).
-    2. Execute a single compute or fragment shader (`cs_debayer.wgsl` included in `src/mlv/debayer.rs`):
-       - Subtract sensor black level & normalize against white saturation level.
-       - Apply white balance multipliers ($R$, $G$, $B$).
-       - Perform 1-pass Malvar-He-Cutler or Bilinear Bayer interpolation.
-       - Apply camera color matrix to Rec.709 sRGB + Gamma 2.2 transfer function.
-    3. Blit directly into egui's viewport via `egui::PaintCallback` or `egui::TextureHandle`.
+### 💾 5D Mark III Dual-Card Spanning
+- Full support for multi-part spanned recordings created by high-bitrate dual-card recording (CompactFlash + SD card spanning).
+- Automatically discovers and stitches primary `.MLV` files with companion slices (`.M00`, `.M01`, `.M02`, etc.) across split directories seamlessly.
 
 ---
 
-## ⌨️ Photo browser Keyboard Shortcuts
+## ⌨️ Keyboard Shortcuts
 
-| Shortcut             | Action                              |
-| :------------------- | :---------------------------------- |
-| **`G`**              | Switch to Grid View (Contact Sheet) |
-| **`E`**              | Switch to Loupe / Player View       |
-| **`Space`**          | Play / Pause video                  |
-| **`Left` / `Right`** | Step 1 frame backward / forward     |
-| **`1` – `5`**        | Set Star Rating (1 to 5 stars)      |
-| **`0`**              | Clear Star Rating                   |
-| **`P`**              | Flag as **Picked**                  |
-| **`X`**              | Flag as **Rejected**                |
-| **`U`**              | **Unflag** / reset status           |
-| **`Esc`**            | Return to Grid View                 |
+| Shortcut | Context | Action |
+| :--- | :--- | :--- |
+| **`G`** | Global | Switch to Grid View (Contact Sheet) |
+| **`E`** | Global | Switch to Player / Loupe View |
+| **`F`** | Player View | Toggle Cinema Fullscreen Video mode |
+| **`Space`** | Player View | Play / Pause playback |
+| **`Left` / `Right`** | Player View | Step 1 frame backward / forward |
+| **`1` – `5`** | Grid / Player | Set Star Rating (1 to 5 stars) |
+| **`0`** | Grid / Player | Clear Star Rating |
+| **`P`** | Grid / Player | Flag as **Picked** |
+| **`X`** | Grid / Player | Flag as **Rejected** |
+| **`U`** | Grid / Player | **Unflag** / reset status to Neutral |
+| **`Esc`** | Any | Exit Fullscreen / Return to Grid View |
 
 ---
 
-## 🛠️ Building & Running
+## 🚀 Getting Started
 
 ### Prerequisites
 
-1. **Rust Toolchain**: Install Rust via [rustup.rs](https://rustup.rs/):
-   ```powershell
-   winget install Rustlang.Rustup
-   ```
-2. **C++ Build Tools**: Visual Studio C++ Build Tools (or MinGW/GCC).
+- **Rust Toolchain**: Rust 1.75+ (install via [rustup.rs](https://rustup.rs/))
+- **C/C++ Build Tools**: 
+  - **Windows**: Visual Studio C++ Build Tools or MinGW
+  - **Linux**: `build-essential`, `libasound2-dev`, `libxcb-render0-dev`, `libxcb-shape0-dev`, `libxcb-xfixes0-dev`
+  - **macOS**: Xcode Command Line Tools
 
-### Compilation
+### Installation & Building
 
-```powershell
-# Run in debug mode
+Clone the repository and build with Cargo:
+
+```bash
+git clone https://github.com/javch/mlvExplorer.git
+cd mlvExplorer
+
+# Run in development mode
 cargo run
 
-# Build optimized release binary
+# Build release binary (optimized)
 cargo build --release
 ```
 
-The compiled binary will be located at `target/release/mlv-explorer.exe`.
+The resulting executable will be located at:
+- **Windows**: `target/release/mlv-explorer.exe`
+- **Linux/macOS**: `target/release/mlv-explorer`
+
+---
+
+## 🏗️ Architecture & Module Organization
+
+The project is structured into modular crates and subsystems for maintainability:
+
+```text
+src/
+├── main.rs                 # Application entry point and window bootstrap
+├── app.rs                  # Root eframe App coordinator, state, and top menu
+├── audio.rs                # PCM audio engine & real-time synchronized playback (rodio)
+├── playback.rs             # Video frame stepper, playhead clock, and frame cache
+├── db/                     # SQLite database subsystem
+│   ├── models.rs           # VideoRecord, Slate, and Query models
+│   ├── queries.rs          # SQL queries, catalog filtering, and slate updates
+│   └── schema.rs           # Database migrations, tables, and indexes
+├── mlv/                    # Magic Lantern RAW parsing & decompression
+│   ├── reader.rs           # MLV container block parser (MLVI, RAWI, VIDF, WAVI, AUDF...)
+│   ├── decode.rs           # Frame unpacker, Bayer demosaicing, and audio extraction
+│   ├── spanning.rs         # 5D Mark III multi-part card spanning resolution
+│   ├── color.rs            # Camera matrix transform, white balance, and exposure
+│   ├── lj92.rs             # ITU T.81 Lossless JPEG (LJ92) decompression
+│   ├── debayer.rs          # WGSL compute shader debayering definitions
+│   └── types.rs            # MLV block structures, metadata, and header types
+└── ui/                     # egui user interface
+    ├── grid/               # Contact sheet thumbnail grid & day grouping banners
+    ├── player/             # Cinema video player, transport controls, and fullscreen HUD
+    ├── inspector/          # EXIF metadata viewer and Production Slate editor
+    ├── sidebar.rs          # Navigation tree, filters, and collections
+    ├── top_panel.rs        # Ingestion progress bar and search filter controls
+    └── theme.rs            # Dark cinema UI styling, colors, and typography
+```
+
+---
+
+## 📜 Upstream Attributions & Acknowledgements
+
+MLV Explorer builds upon reverse engineering, research, specifications, and open-source contributions from the Magic Lantern and raw video community. We gratefully credit the following upstream projects:
+
+1. **[The Magic Lantern Project](https://magiclantern.fm)**:
+   - **MLV Format Specification**: Struct layouts, chunk definitions (`mlv.h`, `raw.h`), and metadata block formats (`MLVI`, `RAWI`, `VIDF`, `WAVI`, `AUDF`, `EXPO`, `LENS`, `RTCI`) are derived from the Magic Lantern raw video specification.
+   - Original MLV specification is licensed under the **GNU General Public License v2.0 or later**.
+
+2. **[MLV App](https://github.com/ilia3101/MLV-App)** (by Ilia3101 and the MLV App Contributors):
+   - Reference implementation for MLV file handling, multi-part companion chunk resolution (`.M00`, `.M01`), dual-card spanning logic, and camera color matrix standards.
+   - Licensed under the **GNU General Public License v3.0**.
+
+3. **Lossless JPEG Decoder (`lj92`)**:
+   - The ITU-T.81 process 14 lossless JPEG decompressor used for compressed MLV streams is based on the algorithm originally authored by **Andrew Baldwin**, with adaptations by the Magic Lantern and MLV App developer communities.
+
+4. **Rust Ecosystem**:
+   - Built on top of [`eframe` / `egui`](https://github.com/emilk/egui) for immediate-mode GUI rendering, [`wgpu`](https://github.com/gfx-rs/wgpu) for GPU acceleration, [`rusqlite`](https://github.com/rusqlite/rusqlite) for embedded catalog storage, and [`rodio`](https://github.com/RustAudio/rodio) for multi-channel audio playback.
+
+---
+
+## 📄 License
+
+MLV Explorer is free and open-source software licensed under the **GNU General Public License v3.0 or later** ([GPL-3.0-or-later](LICENSE)).
+
+```text
+MLV Explorer
+Copyright (C) 2026 mlvExplorer Contributors
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+```

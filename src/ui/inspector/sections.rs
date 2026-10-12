@@ -156,10 +156,87 @@ impl NotesSection {
                 egui::TextEdit::multiline(&mut vid.notes)
                     .desired_rows(3)
                     .desired_width(f32::INFINITY)
-                    .hint_text("Add clip notes, location, scene, take..."),
+                    .hint_text("Add clip notes, director comments..."),
             );
             if response.changed() {
                 let _ = db.set_notes(vid.id, &vid.notes);
+            }
+        });
+    }
+}
+
+pub struct ProductionSlateSection;
+
+impl ProductionSlateSection {
+    pub fn show(ui: &mut Ui, vid: &mut VideoRecord, db: &Database) {
+        ui.group(|ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("🎬 PRODUCTION SLATE").strong().size(11.0).color(Color32::from_rgb(245, 158, 11)));
+                if let Some(slate) = vid.slate_label() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new(slate).small().color(Color32::from_rgb(147, 197, 253)));
+                    });
+                }
+            });
+            ui.add_space(4.0);
+
+            let mut changed = false;
+
+            // Row 1: Scene & Shot
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Scene:").small().color(TEXT_SECONDARY));
+                let mut scene = vid.scene.clone().unwrap_or_default();
+                if ui.add_sized([64.0, 18.0], egui::TextEdit::singleline(&mut scene).hint_text("12A")).changed() {
+                    vid.scene = if scene.trim().is_empty() { None } else { Some(scene) };
+                    changed = true;
+                }
+
+                ui.add_space(6.0);
+                ui.label(RichText::new("Shot:").small().color(TEXT_SECONDARY));
+                let mut shot = vid.shot.clone().unwrap_or_default();
+                if ui.add_sized([54.0, 18.0], egui::TextEdit::singleline(&mut shot).hint_text("2")).changed() {
+                    vid.shot = if shot.trim().is_empty() { None } else { Some(shot) };
+                    changed = true;
+                }
+            });
+
+            // Row 2: Take & Unit / Camera
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Take:").small().color(TEXT_SECONDARY));
+                let mut take = vid.take.clone().unwrap_or_default();
+                if ui.add_sized([64.0, 18.0], egui::TextEdit::singleline(&mut take).hint_text("1")).changed() {
+                    vid.take = if take.trim().is_empty() { None } else { Some(take) };
+                    changed = true;
+                }
+
+                ui.add_space(6.0);
+                ui.label(RichText::new("Unit:").small().color(TEXT_SECONDARY));
+                let mut unit = vid.camera_unit.clone().unwrap_or_default();
+                if ui.add_sized([54.0, 18.0], egui::TextEdit::singleline(&mut unit).hint_text("A-Cam")).changed() {
+                    vid.camera_unit = if unit.trim().is_empty() { None } else { Some(unit) };
+                    changed = true;
+                }
+            });
+
+            // Row 3: Location
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Location:").small().color(TEXT_SECONDARY));
+                let mut loc = vid.location.clone().unwrap_or_default();
+                if ui.add(egui::TextEdit::singleline(&mut loc).hint_text("Stage B / Exterior Woods").desired_width(f32::INFINITY)).changed() {
+                    vid.location = if loc.trim().is_empty() { None } else { Some(loc) };
+                    changed = true;
+                }
+            });
+
+            if changed {
+                let _ = db.set_production_slate(
+                    vid.id,
+                    vid.scene.as_deref(),
+                    vid.shot.as_deref(),
+                    vid.take.as_deref(),
+                    vid.location.as_deref(),
+                    vid.camera_unit.as_deref(),
+                );
             }
         });
     }

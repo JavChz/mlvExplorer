@@ -132,10 +132,15 @@ impl Card {
         );
 
         // Codec / Bit-depth pill (bottom-left)
-        let bpp_str = format!("{}-bit", vid.bits_per_pixel);
+        let bpp_str = if vid.has_audio {
+            format!("{}-bit · 🔊", vid.bits_per_pixel)
+        } else {
+            format!("{}-bit", vid.bits_per_pixel)
+        };
+        let bpp_w = if vid.has_audio { 52.0 } else { 38.0 };
         let bpp_rect = Rect::from_min_size(
             Pos2::new(thumb_rect.min.x + 4.0, thumb_rect.max.y - 18.0),
-            Vec2::new(38.0, 15.0),
+            Vec2::new(bpp_w, 15.0),
         );
         painter.rect_filled(bpp_rect, Rounding::same(3.0), Color32::from_black_alpha(200));
         painter.text(
@@ -238,6 +243,17 @@ impl Card {
                 star_col,
             );
             star_x += 16.0;
+        }
+
+        // Production Slate Label (e.g. 🎬 Sc 12 · Sh 1 · Tk 3)
+        if let Some(slate) = vid.slate_label() {
+            painter.text(
+                Pos2::new(rect.max.x - 8.0, cursor_y + 1.0),
+                egui::Align2::RIGHT_TOP,
+                format!("🎬 {}", slate),
+                egui::FontId::proportional(10.5),
+                Color32::from_rgb(245, 158, 11),
+            );
         }
 
         action

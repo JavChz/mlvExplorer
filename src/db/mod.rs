@@ -108,6 +108,19 @@ impl Database {
     }
 
     #[inline]
+    pub fn set_production_slate(
+        &self,
+        video_id: i64,
+        scene: Option<&str>,
+        shot: Option<&str>,
+        take: Option<&str>,
+        location: Option<&str>,
+        camera_unit: Option<&str>,
+    ) -> Result<()> {
+        self.queries().set_production_slate(video_id, scene, shot, take, location, camera_unit)
+    }
+
+    #[inline]
     pub fn add_tag(&self, video_id: i64, tag_name: &str) -> Result<()> {
         self.queries().add_tag(video_id, tag_name)
     }

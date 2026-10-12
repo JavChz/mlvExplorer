@@ -43,6 +43,8 @@ pub struct MlvMetadata {
     pub pixel_aspect_ratio: f32,
     /// Indicates whether clip utilizes 5D3 card spanning (multiple chunk files written in parallel)
     pub is_dual_card: bool,
+    /// Detailed audio track parameters if clip has audio
+    pub audio: Option<AudioMetadata>,
 }
 
 impl MlvMetadata {
@@ -71,8 +73,9 @@ impl MlvMetadata {
     }
 
     /// Auto-detect aspect ratio / stretch factor for Magic Lantern anamorphic & binning modes.
-    /// In all 1x3 / 3x1 crop mood anamorphic modes, raw pixels are squeezed and require 3.0x horizontal stretch (decompression).
+    /// Defaults to 1.0 (1:1 square pixel) when not certain.
     pub fn default_stretch(&self) -> f32 {
+        // 1. Explicit DISP block from Magic Lantern:
         if self.pixel_aspect_ratio > 0.05 && (self.pixel_aspect_ratio - 1.0).abs() > 0.01 {
             // Some MLV tools / encoders write PAR as H:W (e.g. 1/3 or 1/2) rather than W:H.
             // In our viewer, stretch_factor is a horizontal expansion multiplier (>= 1.0).
@@ -91,36 +94,26 @@ impl MlvMetadata {
                 return 1.5;
             } else if (par - 1.333).abs() < 0.15 {
                 return 1.333;
+            } else if (par - 1.0).abs() < 0.1 {
+                return 1.0;
             }
-            return par;
         }
 
-        // Check if RAWC indicated asymmetric sensor binning (e.g. 1x3 or 3x1)
+        // 2. Explicit RAWC block indicating asymmetric sensor binning (e.g. 1x3 or 3x1):
         if self.binning_x > 0 && self.binning_y > 0 && self.binning_x != self.binning_y {
             let max_bin = self.binning_x.max(self.binning_y) as f32;
             let min_bin = self.binning_x.min(self.binning_y) as f32;
             let ratio = max_bin / min_bin.max(1.0);
             if (ratio - 3.0).abs() < 0.25 {
-                return 3.0; // 1x3 or 3x1 mode: always decompress with 3.0x horizontal stretch
+                return 3.0; // 1x3 or 3x1 binning mode
             } else if (ratio - 2.0).abs() < 0.2 {
                 return 2.0;
             } else if (ratio - 1.5).abs() < 0.15 {
                 return 1.5;
             }
-            return ratio;
         }
 
-        // Geometric heuristics based on captured raw sensor dimensions:
-        // In Magic Lantern 1x3 / Crop Mood anamorphic modes, sensor readout squashes raw video horizontally
-        // (e.g. 1736x2214, 1736x2178, 1736x1160, 1536x2160, 1280x2160, 720x1280).
-        // Stretched horizontally by 3.0x to restore widescreen aspect ratio!
-        if self.width > 0 && self.height > 0 {
-            let raw_ar = self.width as f32 / self.height as f32;
-            if raw_ar >= 0.35 && raw_ar <= 1.25 {
-                return 3.0;
-            }
-        }
-
+        // Default to standard 1:1 square pixels when not explicitly set
         1.0
     }
 
@@ -144,6 +137,36 @@ impl MlvMetadata {
 /// Location of a single video frame payload on disk
 #[derive(Debug, Clone, Copy)]
 pub struct FrameRef {
+    pub frame_number: u32,
+    pub chunk: u16,
+    pub offset: u64,
+    pub size: u32,
+}
+
+/// Detailed MLV audio track parameters from WAVI block
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioMetadata {
+    pub format: u16,          // 1 = Linear PCM
+    pub channels: u16,        // 1 = Mono, 2 = Stereo
+    pub sample_rate: u32,     // 44100, 48000 Hz
+    pub bits_per_sample: u16, // 16 bits
+}
+
+impl Default for AudioMetadata {
+    fn default() -> Self {
+        Self {
+            format: 1,
+            channels: 2,
+            sample_rate: 48000,
+            bits_per_sample: 16,
+        }
+    }
+}
+
+/// Location of a single audio chunk (AUDF block) on disk
+#[derive(Debug, Clone, Copy)]
+pub struct AudioChunkRef {
+    pub timestamp: u64,
     pub frame_number: u32,
     pub chunk: u16,
     pub offset: u64,
