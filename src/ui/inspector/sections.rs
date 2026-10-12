@@ -18,14 +18,14 @@ impl OrganizationSection {
 
                 // Clip name + one-line summary
                 ui.add(
-                    egui::Label::new(RichText::new(&vid.file_name).size(FONT_TITLE).strong().color(TEXT_PRIMARY))
+                    egui::Label::new(RichText::new(&vid.file_name).size(FONT_TITLE).strong().color(text_primary(ui)))
                         .truncate(),
                 );
                 let mut summary = format!("{} × {}  ·  {}", vid.width, vid.height, widgets::format_fps(vid.fps));
                 if !vid.camera_name.is_empty() {
                     summary = format!("{}  ·  {}", vid.camera_name, summary);
                 }
-                ui.add(egui::Label::new(RichText::new(summary).size(FONT_SMALL).color(TEXT_SECONDARY)).truncate());
+                ui.add(egui::Label::new(RichText::new(summary).size(FONT_SMALL).color(text_secondary(ui))).truncate());
                 ui.add_space(8.0);
 
                 widgets::field_row(ui, "Rating", |ui| {
@@ -65,7 +65,7 @@ pub struct ProductionSlateSection;
 impl ProductionSlateSection {
     pub fn show(ui: &mut Ui, vid: &mut VideoRecord, db: &Database) -> Option<InspectorAction> {
         let mut action = None;
-        let trailing = vid.slate_label().map(|s| RichText::new(s).size(FONT_CAPTION).color(TEXT_MUTED).into());
+        let trailing = vid.slate_label().map(|s| RichText::new(s).size(FONT_CAPTION).color(text_muted(ui)).into());
 
         widgets::section(ui, "Slate", true, trailing, |ui| {
             let mut changed = false;
@@ -101,16 +101,16 @@ impl ProductionSlateSection {
 fn keyword_chip(ui: &mut Ui, text: &str) -> bool {
     let mut removed = false;
     egui::Frame::none()
-        .fill(BG_SECTION)
-        .stroke(Stroke::new(1.0_f32, BORDER_STRONG))
+        .fill(bg_section(ui))
+        .stroke(Stroke::new(1.0_f32, border_strong(ui)))
         .rounding(egui::Rounding::same(10.0))
         .inner_margin(egui::Margin { left: 8.0, right: 5.0, top: 2.0, bottom: 2.0 })
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             ui.horizontal(|ui| {
-                ui.label(RichText::new(text).size(FONT_SMALL).color(TEXT_PRIMARY));
+                ui.label(RichText::new(text).size(FONT_SMALL).color(text_primary(ui)));
                 let x = ui
-                    .add(egui::Label::new(RichText::new(icon::X).size(10.0).color(TEXT_MUTED)).sense(Sense::click()))
+                    .add(egui::Label::new(RichText::new(icon::X).size(10.0).color(text_muted(ui))).sense(Sense::click()))
                     .on_hover_text("Remove keyword");
                 if x.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -135,7 +135,7 @@ impl TagsSection {
     ) -> Option<InspectorAction> {
         let mut action = None;
         let trailing = (!vid.tags.is_empty())
-            .then(|| RichText::new(vid.tags.len().to_string()).size(FONT_CAPTION).color(TEXT_MUTED).into());
+            .then(|| RichText::new(vid.tags.len().to_string()).size(FONT_CAPTION).color(text_muted(ui)).into());
 
         widgets::section(ui, "Keywords", true, trailing, |ui| {
             // 1. Existing keywords as removable chips on the active clip
@@ -200,7 +200,7 @@ impl TagsSection {
             if !all_tag_records.is_empty() {
                 ui.add_space(2.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Parent:").size(FONT_CAPTION).color(TEXT_MUTED));
+                    ui.label(RichText::new("Parent:").size(FONT_CAPTION).color(text_muted(ui)));
                     let current_parent_name = inspector
                         .new_tag_parent_id
                         .and_then(|pid| all_tag_records.iter().find(|t| t.id == pid).map(|t| t.name.as_str()))
@@ -228,11 +228,11 @@ impl TagsSection {
             ui.add_space(4.0);
 
             // 3. Complete Keyword List with Checkboxes (Apply to clip) and Filter Arrow
-            ui.label(RichText::new("ALL KEYWORDS (Check to assign)").size(FONT_CAPTION).color(TEXT_MUTED).strong());
+            ui.label(RichText::new("ALL KEYWORDS (Check to assign)").size(FONT_CAPTION).color(text_muted(ui)).strong());
             ui.add_space(2.0);
 
             if facets.tag_tree.is_empty() {
-                ui.label(RichText::new("No keywords in catalog yet.").size(FONT_SMALL).color(TEXT_HINT));
+                ui.label(RichText::new("No keywords in catalog yet.").size(FONT_SMALL).color(text_hint(ui)));
             } else {
                 for node in &facets.tag_tree {
                     if let Some(act) = Self::render_inspector_keyword_node(ui, node, vid, db, 0) {
@@ -273,7 +273,7 @@ impl TagsSection {
             // Expand / Collapse Caret
             if has_children {
                 let caret = if is_expanded { icon::CARET_DOWN } else { icon::CARET_RIGHT };
-                if ui.add(egui::Label::new(RichText::new(caret).size(11.0).color(TEXT_MUTED)).sense(Sense::click())).clicked() {
+                if ui.add(egui::Label::new(RichText::new(caret).size(11.0).color(text_muted(ui))).sense(Sense::click())).clicked() {
                     is_expanded = !is_expanded;
                     ui.data_mut(|d| d.insert_temp(id, is_expanded));
                 }
@@ -298,7 +298,7 @@ impl TagsSection {
             }
 
             // Keyword name label
-            let text_color = if is_checked { TEXT_PRIMARY } else { TEXT_SECONDARY };
+            let text_color = if is_checked { text_primary(ui) } else { text_secondary(ui) };
             let lbl_resp = ui.add(egui::Label::new(RichText::new(&node.name).size(FONT_BODY).color(text_color)).sense(Sense::click()));
             if lbl_resp.clicked() {
                 // Clicking label also toggles the checkbox
@@ -316,7 +316,7 @@ impl TagsSection {
             // Right-aligned Filter Arrow Button (Lightroom style filter arrow)
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let filter_btn = ui.add(
-                    egui::Button::new(RichText::new(icon::ARROW_RIGHT).size(12.0).color(TEXT_MUTED))
+                    egui::Button::new(RichText::new(icon::ARROW_RIGHT).size(12.0).color(text_muted(ui)))
                         .fill(egui::Color32::TRANSPARENT)
                         .stroke(Stroke::NONE),
                 )

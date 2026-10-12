@@ -21,9 +21,9 @@ impl Navigator {
             Align2::LEFT_CENTER,
             "Library",
             FontId::proportional(FONT_BODY + 0.5),
-            TEXT_PRIMARY,
+            text_primary(ui),
         );
-        painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0_f32, BORDER_SUBTLE));
+        painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0_f32, border_subtle(ui)));
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -72,10 +72,10 @@ impl Navigator {
                 ui.add_space(8.0);
 
                 // Section: CAMERAS
-                let trailing_cam = (!facets.cameras.is_empty()).then(|| RichText::new(facets.cameras.len().to_string()).size(FONT_CAPTION).color(TEXT_MUTED).into());
+                let trailing_cam = (!facets.cameras.is_empty()).then(|| RichText::new(facets.cameras.len().to_string()).size(FONT_CAPTION).color(text_muted(ui)).into());
                 widgets::section(ui, "Cameras", true, trailing_cam, |ui| {
                     if facets.cameras.is_empty() {
-                        ui.label(RichText::new("No cameras detected").size(FONT_SMALL).color(TEXT_HINT));
+                        ui.label(RichText::new("No cameras detected").size(FONT_SMALL).color(text_hint(ui)));
                     }
                     for cam in &facets.cameras {
                         let is_sel = filter.camera.as_ref() == Some(&cam.name);
@@ -87,10 +87,10 @@ impl Navigator {
                 });
 
                 // Section: LENSES
-                let trailing_lens = (!facets.lenses.is_empty()).then(|| RichText::new(facets.lenses.len().to_string()).size(FONT_CAPTION).color(TEXT_MUTED).into());
+                let trailing_lens = (!facets.lenses.is_empty()).then(|| RichText::new(facets.lenses.len().to_string()).size(FONT_CAPTION).color(text_muted(ui)).into());
                 widgets::section(ui, "Lenses", true, trailing_lens, |ui| {
                     if facets.lenses.is_empty() {
-                        ui.label(RichText::new("No lenses detected").size(FONT_SMALL).color(TEXT_HINT));
+                        ui.label(RichText::new("No lenses detected").size(FONT_SMALL).color(text_hint(ui)));
                     }
                     for lens in &facets.lenses {
                         let is_sel = filter.lens.as_ref() == Some(&lens.name);
@@ -103,10 +103,10 @@ impl Navigator {
 
                 // Section: KEYWORDS / TAGS (Hierarchical tree like Lightroom)
                 let total_tags_count = facets.tags.len();
-                let trailing_tags = (total_tags_count > 0).then(|| RichText::new(total_tags_count.to_string()).size(FONT_CAPTION).color(TEXT_MUTED).into());
+                let trailing_tags = (total_tags_count > 0).then(|| RichText::new(total_tags_count.to_string()).size(FONT_CAPTION).color(text_muted(ui)).into());
                 widgets::section(ui, "Keywords", true, trailing_tags, |ui| {
                     if facets.tag_tree.is_empty() {
-                        ui.label(RichText::new("No keywords created").size(FONT_SMALL).color(TEXT_HINT));
+                        ui.label(RichText::new("No keywords created").size(FONT_SMALL).color(text_hint(ui)));
                     } else {
                         for node in &facets.tag_tree {
                             if Self::render_keyword_tree_node(ui, node, filter, 0, &mut changed) {
@@ -138,7 +138,7 @@ impl Navigator {
                             ui.set_min_height(20.0);
                             widgets::keycap(ui, key);
                             ui.add_space(4.0);
-                            ui.label(RichText::new(desc).size(FONT_SMALL).color(TEXT_SECONDARY));
+                            ui.label(RichText::new(desc).size(FONT_SMALL).color(text_secondary(ui)));
                         });
                     }
                 });
@@ -159,20 +159,22 @@ impl Navigator {
         glyph_color: Option<Color32>,
         custom_icon_font: Option<FontId>,
     ) -> bool {
+        let is_dark = ui.visuals().dark_mode;
         let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
         let painter = ui.painter();
 
         // Row background
         if is_selected {
-            painter.rect_filled(rect, Rounding::same(ROUNDING), ACCENT_DIM);
+            let bg_sel = if is_dark { ACCENT_DIM } else { ACCENT };
+            painter.rect_filled(rect, Rounding::same(ROUNDING), bg_sel);
             painter.rect_stroke(rect, Rounding::same(ROUNDING), Stroke::new(1.0_f32, ACCENT));
         } else if response.hovered() {
-            painter.rect_filled(rect, Rounding::same(ROUNDING), BG_CARD_HOVER);
+            painter.rect_filled(rect, Rounding::same(ROUNDING), bg_card_hover(ui));
         }
 
         // Left Icon + Label
-        let icon_col = glyph_color.unwrap_or(if is_selected { Color32::WHITE } else { TEXT_SECONDARY });
-        let text_col = if is_selected { Color32::WHITE } else { TEXT_PRIMARY };
+        let icon_col = glyph_color.unwrap_or(if is_selected { Color32::WHITE } else { text_secondary(ui) });
+        let text_col = if is_selected { Color32::WHITE } else { text_primary(ui) };
         let text_y = rect.center().y;
 
         let icon_font = custom_icon_font.unwrap_or_else(|| FontId::proportional(13.0));
@@ -193,17 +195,18 @@ impl Navigator {
         );
 
         let badge_bg = if is_selected {
-            ACCENT.gamma_multiply(0.4)
+            if is_dark { ACCENT.gamma_multiply(0.4) } else { Color32::from_white_alpha(50) }
         } else {
-            BG_FIELD
+            bg_field(ui)
         };
+        let badge_text_col = if is_selected { Color32::WHITE } else { text_muted(ui) };
         painter.rect_filled(badge_rect, Rounding::same(8.0), badge_bg);
         painter.text(
             badge_rect.center(),
             Align2::CENTER_CENTER,
             &count_str,
             FontId::proportional(FONT_CAPTION),
-            if is_selected { Color32::WHITE } else { TEXT_MUTED },
+            badge_text_col,
         );
 
         // Text label in middle with safe elision
@@ -238,6 +241,7 @@ impl Navigator {
         let is_sel = filter.tag.as_ref() == Some(&node.name);
         let id = ui.make_persistent_id(format!("kw_node_{}", node.id));
         let mut is_expanded = ui.data_mut(|d| d.get_temp::<bool>(id).unwrap_or(true));
+        let is_dark = ui.visuals().dark_mode;
 
         let indent = depth as f32 * 14.0;
         let row_height = 24.0;
@@ -246,10 +250,11 @@ impl Navigator {
 
         // Row background
         if is_sel {
-            painter.rect_filled(rect, Rounding::same(ROUNDING), ACCENT_DIM);
+            let bg_sel = if is_dark { ACCENT_DIM } else { ACCENT };
+            painter.rect_filled(rect, Rounding::same(ROUNDING), bg_sel);
             painter.rect_stroke(rect, Rounding::same(ROUNDING), Stroke::new(1.0_f32, ACCENT));
         } else if response.hovered() {
-            painter.rect_filled(rect, Rounding::same(ROUNDING), BG_CARD_HOVER);
+            painter.rect_filled(rect, Rounding::same(ROUNDING), bg_card_hover(ui));
         }
 
         let center_y = rect.center().y;
@@ -270,16 +275,17 @@ impl Navigator {
                 Align2::CENTER_CENTER,
                 caret_glyph,
                 FontId::proportional(11.0),
-                if caret_resp.hovered() { Color32::WHITE } else { TEXT_MUTED },
+                if caret_resp.hovered() { text_primary(ui) } else { text_muted(ui) },
             );
         } else {
             // Bullet or subtle dot
-            painter.circle_filled(Pos2::new(cur_x + 6.0, center_y), 1.5, TEXT_MUTED);
+            let dot_col = if is_sel { Color32::WHITE } else { text_muted(ui) };
+            painter.circle_filled(Pos2::new(cur_x + 6.0, center_y), 1.5, dot_col);
         }
         cur_x += 16.0;
 
         // Tag icon
-        let tag_col = if is_sel { Color32::WHITE } else { ACCENT_HOVER };
+        let tag_col = if is_sel { Color32::WHITE } else { ACCENT };
         painter.text(
             Pos2::new(cur_x, center_y),
             Align2::LEFT_CENTER,
@@ -307,14 +313,19 @@ impl Navigator {
             Vec2::new(badge_w, 15.0),
         );
 
-        let badge_bg = if is_sel { ACCENT.gamma_multiply(0.4) } else { BG_FIELD };
+        let badge_bg = if is_sel {
+            if is_dark { ACCENT.gamma_multiply(0.4) } else { Color32::from_white_alpha(50) }
+        } else {
+            bg_field(ui)
+        };
+        let badge_text_col = if is_sel { Color32::WHITE } else { text_muted(ui) };
         painter.rect_filled(badge_rect, Rounding::same(8.0), badge_bg);
         painter.text(
             badge_rect.center(),
             Align2::CENTER_CENTER,
             &count_str,
             FontId::proportional(FONT_CAPTION),
-            if is_sel { Color32::WHITE } else { TEXT_MUTED },
+            badge_text_col,
         );
 
         // Arrow button on right (Lightroom style filter arrow)
@@ -326,7 +337,7 @@ impl Navigator {
                 Align2::CENTER_CENTER,
                 icon::ARROW_RIGHT,
                 FontId::proportional(12.0),
-                if arrow_hovered || is_sel { Color32::WHITE } else { TEXT_SECONDARY },
+                if arrow_hovered || is_sel { Color32::WHITE } else { text_secondary(ui) },
             );
         }
 
@@ -349,7 +360,7 @@ impl Navigator {
             Align2::LEFT_CENTER,
             elided,
             font_id,
-            if is_sel { Color32::WHITE } else { TEXT_PRIMARY },
+            if is_sel { Color32::WHITE } else { text_primary(ui) },
         );
 
         // Recursively render children if expanded

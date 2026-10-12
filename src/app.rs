@@ -15,6 +15,20 @@ pub enum ViewMode {
     Player,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ClipSettingsClipboard {
+    pub stretch_factor: Option<f32>,
+    pub tags: Option<Vec<String>>,
+    pub rating: Option<u8>,
+    pub flag: Option<PickFlag>,
+    pub notes: Option<String>,
+    pub scene: Option<String>,
+    pub shot: Option<String>,
+    pub take: Option<String>,
+    pub location: Option<String>,
+    pub camera_unit: Option<String>,
+}
+
 pub struct MlvExplorerApp {
     config: crate::config::AppConfig,
     db: Database,
@@ -28,6 +42,9 @@ pub struct MlvExplorerApp {
     cameras: Vec<String>,
     lenses: Vec<String>,
 
+    // Clipboard for copy/paste clip settings
+    settings_clipboard: Option<ClipSettingsClipboard>,
+
     // Media & Playback
     thumb_mgr: ThumbnailManager,
     current_playback: Option<(i64, Playback)>, // (video_id, Playback)
@@ -38,6 +55,9 @@ pub struct MlvExplorerApp {
     inspector: Inspector,
     settings_dialog: SettingsDialog,
     delete_confirm_dialog: DeleteConfirmDialog,
+    keyword_dialog: KeywordManagerDialog,
+    help_dialogs: HelpDialogs,
+    update_manager: crate::updater::UpdateManager,
 
     // Background Importer
     import_tx: crossbeam_channel::Sender<ImportMessage>,
@@ -52,9 +72,6 @@ pub struct MlvExplorerApp {
 
 impl MlvExplorerApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // Apply professional dark studio theme
-        theme::apply_theme(&cc.egui_ctx);
-
         // Initialize GPU debayer shaders via wgpu
         let gpu_info = if let Some(render_state) = &cc.wgpu_render_state {
             gpu::init(render_state)
@@ -64,6 +81,9 @@ impl MlvExplorerApp {
 
         // Load persistent application config
         let config = crate::config::AppConfig::load();
+
+        // Apply theme according to configuration (Dark / Light)
+        theme::apply_theme(&cc.egui_ctx, config.theme_mode);
 
         // Open SQLite catalog (last opened or default)
         let db_path = config.resolve_catalog_path();
@@ -88,6 +108,7 @@ impl MlvExplorerApp {
             all_tags: Vec::new(),
             cameras: Vec::new(),
             lenses: Vec::new(),
+            settings_clipboard: None,
             thumb_mgr,
             current_playback: None,
             grid_view: GridView::default(),
@@ -95,6 +116,9 @@ impl MlvExplorerApp {
             inspector: Inspector::default(),
             settings_dialog: SettingsDialog::default(),
             delete_confirm_dialog: DeleteConfirmDialog::default(),
+            keyword_dialog: KeywordManagerDialog::default(),
+            help_dialogs: HelpDialogs::default(),
+            update_manager: crate::updater::UpdateManager::default(),
             import_tx,
             import_rx,
             import_progress: None,
@@ -370,6 +394,99 @@ impl MlvExplorerApp {
         }
     }
 
+    /// Copy settings from currently selected clip into clipboard
+    pub fn copy_clip_settings(&mut self) {
+        let Some(idx) = self.selected_video_idx else {
+            self.status_bar_text = "Select a clip to copy settings.".to_string();
+            return;
+        };
+        let Some(vid) = self.videos.get(idx) else { return; };
+
+        self.settings_clipboard = Some(ClipSettingsClipboard {
+            stretch_factor: Some(vid.stretch_factor),
+            tags: Some(vid.tags.clone()),
+            rating: Some(vid.rating),
+            flag: Some(vid.flag),
+            notes: Some(vid.notes.clone()),
+            scene: vid.scene.clone(),
+            shot: vid.shot.clone(),
+            take: vid.take.clone(),
+            location: vid.location.clone(),
+            camera_unit: vid.camera_unit.clone(),
+        });
+
+        self.status_bar_text = format!("Copied settings from clip '{}'", vid.file_name);
+    }
+
+    /// Paste settings from clipboard to all currently selected clips
+    pub fn paste_clip_settings(&mut self) {
+        let Some(clip) = self.settings_clipboard.clone() else {
+            self.status_bar_text = "Clip settings clipboard is empty. Copy settings first (Ctrl+C).".to_string();
+            return;
+        };
+
+        let target_indices = if !self.selected_indices.is_empty() {
+            self.selected_indices.clone()
+        } else if let Some(idx) = self.selected_video_idx {
+            vec![idx]
+        } else {
+            Vec::new()
+        };
+
+        if target_indices.is_empty() {
+            self.status_bar_text = "No clip(s) selected to paste settings into.".to_string();
+            return;
+        }
+
+        let count = target_indices.len();
+        for &idx in &target_indices {
+            if let Some(vid) = self.videos.get_mut(idx) {
+                if let Some(stretch) = clip.stretch_factor {
+                    vid.stretch_factor = stretch;
+                    let _ = self.db.set_stretch_factor(vid.id, stretch);
+                }
+                if let Some(rating) = clip.rating {
+                    vid.rating = rating;
+                    let _ = self.db.set_rating(vid.id, rating);
+                }
+                if let Some(flag) = clip.flag {
+                    vid.flag = flag;
+                    let _ = self.db.set_flag(vid.id, flag);
+                }
+                if let Some(ref notes) = clip.notes {
+                    vid.notes = notes.clone();
+                    let _ = self.db.set_notes(vid.id, notes);
+                }
+                if clip.scene.is_some() || clip.shot.is_some() || clip.take.is_some() || clip.location.is_some() || clip.camera_unit.is_some() {
+                    vid.scene = clip.scene.clone();
+                    vid.shot = clip.shot.clone();
+                    vid.take = clip.take.clone();
+                    vid.location = clip.location.clone();
+                    vid.camera_unit = clip.camera_unit.clone();
+                    let _ = self.db.set_production_slate(
+                        vid.id,
+                        clip.scene.as_deref(),
+                        clip.shot.as_deref(),
+                        clip.take.as_deref(),
+                        clip.location.as_deref(),
+                        clip.camera_unit.as_deref(),
+                    );
+                }
+                if let Some(ref tags) = clip.tags {
+                    for tag in tags {
+                        if !vid.tags.contains(tag) {
+                            vid.tags.push(tag.clone());
+                            let _ = self.db.add_tag(vid.id, tag);
+                        }
+                    }
+                }
+            }
+        }
+
+        self.refresh_facets();
+        self.status_bar_text = format!("Pasted clip settings to {} selected clip(s).", count);
+    }
+
     /// Handle drag-and-drop file imports from OS
     fn handle_drag_and_drop(&mut self, ctx: &egui::Context) {
         let dropped_files = ctx.input(|i| i.raw.dropped_files.clone());
@@ -422,6 +539,29 @@ impl MlvExplorerApp {
         if (input.modifiers.command || input.modifiers.ctrl) && input.key_pressed(egui::Key::D) {
             self.selected_indices.clear();
             self.selected_video_idx = None;
+        }
+
+        // Ctrl+A / Cmd+A: Select all clips
+        if (input.modifiers.command || input.modifiers.ctrl) && input.key_pressed(egui::Key::A) {
+            self.selected_indices = (0..self.videos.len()).collect();
+            if self.selected_video_idx.is_none() && !self.videos.is_empty() {
+                self.selected_video_idx = Some(0);
+            }
+        }
+
+        // Ctrl+C / Cmd+C: Copy clip settings
+        if (input.modifiers.command || input.modifiers.ctrl) && input.key_pressed(egui::Key::C) {
+            self.copy_clip_settings();
+        }
+
+        // Ctrl+V / Cmd+V: Paste clip settings
+        if (input.modifiers.command || input.modifiers.ctrl) && input.key_pressed(egui::Key::V) {
+            self.paste_clip_settings();
+        }
+
+        // F1: Open shortcuts help
+        if input.key_pressed(egui::Key::F1) {
+            self.help_dialogs.show_shortcuts = true;
         }
 
         // Delete / Backspace: Remove selected clip(s) from catalog (with confirmation)
@@ -562,8 +702,35 @@ impl eframe::App for MlvExplorerApp {
         }
 
         self.thumb_mgr.update(ctx);
+        self.update_manager.update();
+        match &self.update_manager.status {
+            crate::updater::UpdateStatus::UpdateAvailable { latest_version, .. } => {
+                if !self.status_bar_text.starts_with("Update available") {
+                    self.status_bar_text = format!("Update available: v{latest_version}. Check Help menu.");
+                }
+            }
+            crate::updater::UpdateStatus::UpToDate { current_version } => {
+                if self.status_bar_text == "Checking for updates..." {
+                    self.status_bar_text = format!("MLV Explorer is up to date (v{current_version}).");
+                }
+            }
+            crate::updater::UpdateStatus::Error(e) => {
+                if self.status_bar_text == "Checking for updates..." {
+                    self.status_bar_text = format!("Update check failed: {e}");
+                }
+            }
+            _ => {}
+        }
+
         self.handle_drag_and_drop(ctx);
         self.handle_keyboard_shortcuts(ctx);
+
+        let has_modal_open = self.keyword_dialog.is_open
+            || self.settings_dialog.is_open
+            || self.delete_confirm_dialog.is_open
+            || self.help_dialogs.show_shortcuts
+            || self.help_dialogs.show_about
+            || self.help_dialogs.show_updater;
 
         let is_fullscreen_player = self.view_mode == ViewMode::Player && self.player_view.is_fullscreen;
 
@@ -573,57 +740,241 @@ impl eframe::App for MlvExplorerApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(is_fullscreen_player));
         }
 
-        // 1. Studio Top Bar
+        // 1. Studio Top Menu Bar (Native File, Edit, View, Preferences, Help + Grid/Player on right)
         if !is_fullscreen_player {
-            egui::TopBottomPanel::top("studio_top_bar")
-                .exact_height(38.0)
+            let mut menu_action = None;
+            egui::TopBottomPanel::top("app_menu_bar")
+                .exact_height(26.0)
                 .show(ctx, |ui| {
                     let can_open_player = self.selected_video_idx.is_some();
                     let is_player_mode = self.view_mode == ViewMode::Player;
+                    menu_action = TopBar::show_menu_bar(ui, is_player_mode, can_open_player);
+                });
 
-                    let (filter_changed, action) = TopBar::show(
+            // 2. Studio Workspace Toolbar (Search, Sort, Ratings, Flags, Zoom slider, Import buttons)
+            let mut toolbar_action = None;
+            egui::TopBottomPanel::top("app_workspace_toolbar")
+                .exact_height(42.0)
+                .show(ctx, |ui| {
+                    let (filter_changed, act) = TopBar::show_toolbar(
                         ui,
                         &mut self.filter,
-                        is_player_mode,
-                        can_open_player,
-                        &self.cameras,
-                        &self.lenses,
+                        &mut self.grid_view.card_size,
                     );
+                    toolbar_action = act;
 
                     if filter_changed {
                         self.reload_catalog();
                     }
+                });
 
-                    if let Some(act) = action {
-                        match act {
-                            TopBarAction::SwitchToGrid => {
-                                self.view_mode = ViewMode::Grid;
-                            }
-                            TopBarAction::SwitchToPlayer => {
-                                if self.selected_video_idx.is_some() {
-                                    self.view_mode = ViewMode::Player;
-                                    self.ensure_playback(ctx);
+            let combined_action = menu_action.or(toolbar_action);
+            if let Some(act) = combined_action {
+                match act {
+                    // File
+                    TopBarAction::NewCatalog => {
+                        if let Some(new_path) = rfd::FileDialog::new()
+                            .set_title("Create New MLV Explorer Catalog")
+                            .set_file_name("my_mlv_catalog.db")
+                            .add_filter("SQLite Catalog (.db)", &["db", "sqlite"])
+                            .save_file()
+                        {
+                            self.switch_catalog(new_path, ctx);
+                        }
+                    }
+                    TopBarAction::OpenCatalog => {
+                        if let Some(open_path) = rfd::FileDialog::new()
+                            .set_title("Open MLV Explorer Catalog")
+                            .add_filter("SQLite Catalog (.db)", &["db", "sqlite"])
+                            .pick_file()
+                        {
+                            self.switch_catalog(open_path, ctx);
+                        }
+                    }
+                    TopBarAction::ImportExistingCatalog => {
+                        if let Some(import_path) = rfd::FileDialog::new()
+                            .set_title("Import Another Catalog into Current Library")
+                            .add_filter("Catalog (.db, .json)", &["db", "sqlite", "json"])
+                            .pick_file()
+                        {
+                            let ext = import_path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+                            if ext == "json" {
+                                match self.db.import_catalog_json(&import_path) {
+                                    Ok(count) => {
+                                        self.status_bar_text = format!("Merged {count} clips from JSON catalog");
+                                        self.reload_catalog();
+                                    }
+                                    Err(e) => {
+                                        self.status_bar_text = format!("Error importing JSON catalog: {e}");
+                                    }
                                 }
-                            }
-                            TopBarAction::ImportFiles => {
-                                if let Some(files) = rfd::FileDialog::new()
-                                    .add_filter("Magic Lantern RAW Video", &["mlv", "MLV"])
-                                    .pick_files()
-                                {
-                                    self.start_import(files, ctx);
+                            } else {
+                                match self.db.import_from_catalog_db(&import_path) {
+                                    Ok(added) => {
+                                        self.status_bar_text = format!("Merged {added} clips from database");
+                                        self.reload_catalog();
+                                    }
+                                    Err(e) => {
+                                        self.status_bar_text = format!("Error importing database: {e}");
+                                    }
                                 }
-                            }
-                            TopBarAction::ImportFolder => {
-                                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                                    self.start_import(vec![folder], ctx);
-                                }
-                            }
-                            TopBarAction::OpenSettingsModal => {
-                                self.settings_dialog.open(&self.config);
                             }
                         }
                     }
-                });
+                    TopBarAction::ExportCatalog => {
+                        if let Some(export_path) = rfd::FileDialog::new()
+                            .set_title("Export Catalog to JSON")
+                            .set_file_name("mlv_catalog_export.json")
+                            .add_filter("JSON Document", &["json"])
+                            .save_file()
+                        {
+                            match self.db.export_catalog_json(&export_path) {
+                                Ok(()) => {
+                                    self.status_bar_text = format!("Exported catalog to {}", export_path.display());
+                                }
+                                Err(e) => {
+                                    self.status_bar_text = format!("Error exporting catalog: {e}");
+                                }
+                            }
+                        }
+                    }
+                    TopBarAction::BackupCatalog => {
+                        let backup_dir = self.config.backup_folder.clone().unwrap_or_else(|| {
+                            let def = self.db.path.parent().unwrap_or(Path::new(".")).join("backups");
+                            let _ = std::fs::create_dir_all(&def);
+                            def
+                        });
+                        let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+                        let orig_stem = self.db.path.file_stem().unwrap_or_default().to_string_lossy();
+                        let backup_file = backup_dir.join(format!("{orig_stem}_backup_{timestamp}.db"));
+
+                        match self.db.backup_database_to_file(&backup_file) {
+                            Ok(_) => {
+                                self.status_bar_text = format!("Created atomic backup: {}", backup_file.display());
+                            }
+                            Err(e) => {
+                                self.status_bar_text = format!("Backup failed: {e}");
+                            }
+                        }
+                    }
+                    TopBarAction::ImportFiles => {
+                        if let Some(files) = rfd::FileDialog::new()
+                            .add_filter("Magic Lantern RAW Video", &["mlv", "MLV"])
+                            .pick_files()
+                        {
+                            self.start_import(files, ctx);
+                        }
+                    }
+                    TopBarAction::ImportFolder => {
+                        if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                            self.start_import(vec![folder], ctx);
+                        }
+                    }
+                    TopBarAction::Exit => {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+
+                    // Edit
+                    TopBarAction::ManageKeywords => {
+                        self.keyword_dialog.open();
+                    }
+                    TopBarAction::CopyClipSettings => {
+                        self.copy_clip_settings();
+                    }
+                    TopBarAction::PasteClipSettings => {
+                        self.paste_clip_settings();
+                    }
+                    TopBarAction::SelectAll => {
+                        self.selected_indices = (0..self.videos.len()).collect();
+                        if self.selected_video_idx.is_none() && !self.videos.is_empty() {
+                            self.selected_video_idx = Some(0);
+                        }
+                    }
+                    TopBarAction::DeselectAll => {
+                        self.selected_indices.clear();
+                        self.selected_video_idx = None;
+                    }
+                    TopBarAction::RemoveFromCatalog => {
+                        let targets = if !self.selected_indices.is_empty() {
+                            self.selected_indices.clone()
+                        } else if let Some(idx) = self.selected_video_idx {
+                            vec![idx]
+                        } else {
+                            Vec::new()
+                        };
+                        if !targets.is_empty() {
+                            self.prompt_delete(DeleteMode::RemoveFromCatalog, targets);
+                        }
+                    }
+                    TopBarAction::MoveToTrash => {
+                        let targets = if !self.selected_indices.is_empty() {
+                            self.selected_indices.clone()
+                        } else if let Some(idx) = self.selected_video_idx {
+                            vec![idx]
+                        } else {
+                            Vec::new()
+                        };
+                        if !targets.is_empty() {
+                            self.prompt_delete(DeleteMode::MoveToTrash, targets);
+                        }
+                    }
+
+                    // View
+                    TopBarAction::SwitchToGrid => {
+                        self.view_mode = ViewMode::Grid;
+                    }
+                    TopBarAction::SwitchToPlayer => {
+                        if self.selected_video_idx.is_some() {
+                            self.view_mode = ViewMode::Player;
+                            self.ensure_playback(ctx);
+                        }
+                    }
+                    TopBarAction::ToggleFullscreen => {
+                        if self.view_mode == ViewMode::Player {
+                            self.player_view.is_fullscreen = !self.player_view.is_fullscreen;
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.player_view.is_fullscreen));
+                        } else if self.selected_video_idx.is_some() {
+                            self.view_mode = ViewMode::Player;
+                            self.player_view.is_fullscreen = true;
+                            self.player_view.show_overlay_controls = false;
+                            self.ensure_playback(ctx);
+                        }
+                    }
+                    TopBarAction::ZoomIn => {
+                        self.grid_view.card_size = (self.grid_view.card_size + 30.0).min(480.0);
+                    }
+                    TopBarAction::ZoomOut => {
+                        self.grid_view.card_size = (self.grid_view.card_size - 30.0).max(160.0);
+                    }
+                    TopBarAction::ZoomReset => {
+                        self.grid_view.card_size = 260.0;
+                    }
+
+                    // Preferences
+                    TopBarAction::SetTheme(mode) => {
+                        self.config.theme_mode = mode;
+                        self.config.save();
+                        theme::apply_theme(ctx, mode);
+                        ctx.request_repaint();
+                    }
+                    TopBarAction::OpenSettingsModal => {
+                        self.settings_dialog.open(&self.config);
+                    }
+
+                    // Help
+                    TopBarAction::OpenShortcutsModal => {
+                        self.help_dialogs.show_shortcuts = true;
+                    }
+                    TopBarAction::CheckForUpdates => {
+                        self.help_dialogs.show_updater = true;
+                        self.update_manager.check_for_updates();
+                        self.status_bar_text = "Checking for updates...".to_string();
+                    }
+                    TopBarAction::OpenAboutModal => {
+                        self.help_dialogs.show_about = true;
+                    }
+                }
+            }
         }
 
         // Import Progress Banner (shown below Top Bar when an import is actively running and not in fullscreen player)
@@ -856,6 +1207,7 @@ impl eframe::App for MlvExplorerApp {
                         &self.selected_indices,
                         &mut self.thumb_mgr,
                         &mut self.filter.sort,
+                        has_modal_open,
                     ) {
                         match action {
                             GridAction::Select { index, extend, toggle } => {
@@ -998,6 +1350,10 @@ impl eframe::App for MlvExplorerApp {
                     }
                 }
             }
+
+            if has_modal_open {
+                ui.painter().rect_filled(ui.max_rect(), egui::Rounding::ZERO, egui::Color32::from_black_alpha(100));
+            }
         });
 
         // 6. Settings & Catalog Manager Modal
@@ -1028,5 +1384,13 @@ impl eframe::App for MlvExplorerApp {
                 DeleteConfirmResult::Cancelled => {}
             }
         }
+
+        // 8. Keyword Manager Modal
+        if let Some(KeywordManagerAction::Changed) = self.keyword_dialog.show(ctx, &self.db) {
+            self.reload_catalog();
+        }
+
+        // 9. Help & Shortcuts Modals
+        self.help_dialogs.show(ctx, &mut self.update_manager);
     }
 }

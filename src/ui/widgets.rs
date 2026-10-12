@@ -99,11 +99,11 @@ pub fn section<R>(
         state.toggle(ui);
     }
     let painter = ui.painter();
-    let bg = if resp.hovered() { BG_CARD_HOVER } else { BG_SECTION };
+    let bg = if resp.hovered() { bg_card_hover(ui) } else { bg_section(ui) };
     painter.rect_filled(rect, Rounding::ZERO, bg);
     painter.line_segment(
         [rect.left_top(), rect.right_top()],
-        Stroke::new(1.0_f32, BORDER_SUBTLE),
+        Stroke::new(1.0_f32, border_subtle(ui)),
     );
     let caret = if state.is_open() { icon::CARET_DOWN } else { icon::CARET_RIGHT };
     painter.text(
@@ -111,14 +111,14 @@ pub fn section<R>(
         Align2::LEFT_CENTER,
         caret,
         FontId::proportional(11.0),
-        TEXT_MUTED,
+        text_muted(ui),
     );
     painter.text(
         Pos2::new(rect.min.x + PANEL_PADDING + 16.0, rect.center().y),
         Align2::LEFT_CENTER,
         title.to_uppercase(),
         FontId::proportional(FONT_CAPTION),
-        TEXT_SECONDARY,
+        text_secondary(ui),
     );
     if let Some(t) = trailing {
         let galley = t.into_galley(ui, Some(egui::TextWrapMode::Truncate), rect.width() * 0.5, egui::TextStyle::Small);
@@ -126,7 +126,7 @@ pub fn section<R>(
             rect.max.x - PANEL_PADDING - galley.size().x,
             rect.center().y - galley.size().y * 0.5,
         );
-        ui.painter().galley(pos, galley, TEXT_SECONDARY);
+        ui.painter().galley(pos, galley, text_secondary(ui));
     }
 
     let out = state.show_body_unindented(ui, |ui| {
@@ -152,7 +152,7 @@ pub fn caption(ui: &mut Ui, text: &str) {
     ui.label(
         RichText::new(text.to_uppercase())
             .size(FONT_CAPTION)
-            .color(TEXT_MUTED)
+            .color(text_muted(ui))
             .extra_letter_spacing(0.6),
     );
 }
@@ -161,6 +161,7 @@ pub fn caption(ui: &mut Ui, text: &str) {
 
 /// A form row: fixed-width left label, content fills the rest.
 pub fn field_row<R>(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let lbl_col = text_secondary(ui);
     ui.horizontal(|ui| {
         ui.set_min_height(CONTROL_HEIGHT);
         ui.allocate_ui_with_layout(
@@ -168,7 +169,7 @@ pub fn field_row<R>(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui) -> R) ->
             Layout::left_to_right(Align::Center),
             |ui| {
                 ui.set_min_width(LABEL_WIDTH);
-                ui.add(egui::Label::new(RichText::new(label).color(TEXT_SECONDARY)).truncate());
+                ui.add(egui::Label::new(RichText::new(label).color(lbl_col)).truncate());
             },
         );
         add(ui)
@@ -220,21 +221,24 @@ pub fn icon_button_colored(
     let size = Vec2::splat(CONTROL_HEIGHT + 2.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let enabled = ui.is_enabled();
+    let is_dark = ui.visuals().dark_mode;
     let painter = ui.painter();
     if active && active_color.is_none() {
-        painter.rect_filled(rect, Rounding::same(ROUNDING), ACCENT_DIM);
+        let fill = if is_dark { ACCENT_DIM } else { Color32::from_rgb(215, 230, 252) };
+        painter.rect_filled(rect, Rounding::same(ROUNDING), fill);
     }
     if resp.hovered() && enabled {
-        painter.rect_filled(rect, Rounding::same(ROUNDING), Color32::from_white_alpha(14));
+        let h_fill = if is_dark { Color32::from_white_alpha(14) } else { Color32::from_black_alpha(14) };
+        painter.rect_filled(rect, Rounding::same(ROUNDING), h_fill);
     }
     let col = if !enabled {
-        TEXT_DISABLED
+        text_disabled(ui)
     } else if active {
-        active_color.unwrap_or(Color32::WHITE)
+        active_color.unwrap_or(if is_dark { Color32::WHITE } else { ACCENT })
     } else if resp.hovered() {
-        Color32::WHITE
+        if is_dark { Color32::WHITE } else { Color32::from_rgb(20, 22, 26) }
     } else {
-        TEXT_SECONDARY
+        text_secondary(ui)
     };
     let font = if active && active_color.is_some() {
         icon_fill_font(15.0)
@@ -252,10 +256,17 @@ pub fn icon_button_colored(
 /// Text toggle button (segmented-control look) — accent fill when selected.
 pub fn toggle_button(ui: &mut Ui, selected: bool, text: impl Into<String>) -> Response {
     let text: String = text.into();
-    let rich = RichText::new(text).color(if selected { Color32::WHITE } else { TEXT_SECONDARY });
+    let is_dark = ui.visuals().dark_mode;
+    let text_col = if selected {
+        Color32::WHITE
+    } else {
+        text_secondary(ui)
+    };
+    let rich = RichText::new(text).color(text_col);
     let mut btn = egui::Button::new(rich).min_size(Vec2::new(0.0, CONTROL_HEIGHT));
     if selected {
-        btn = btn.fill(ACCENT_DIM).stroke(Stroke::new(1.0_f32, ACCENT));
+        let fill = if is_dark { ACCENT_DIM } else { ACCENT };
+        btn = btn.fill(fill).stroke(Stroke::new(1.0_f32, ACCENT));
     } else {
         btn = btn.fill(Color32::TRANSPARENT).stroke(Stroke::NONE);
     }
@@ -317,7 +328,7 @@ pub fn rating_stars(ui: &mut Ui, rating: u8, size: f32) -> Option<u8> {
             let c = if hover_star > 0 { RATING.gamma_multiply(0.8) } else { RATING };
             (icon_fill_font(size), c)
         } else {
-            (FontId::proportional(size), TEXT_MUTED)
+            (FontId::proportional(size), text_muted(ui))
         };
         painter.text(r.center(), Align2::CENTER_CENTER, icon::STAR, font, col);
     }
@@ -358,7 +369,7 @@ pub fn flag_buttons(ui: &mut Ui, flag: crate::db::PickFlag, compact: bool) -> Op
         let resp = if compact {
             icon_button_colored(ui, glyph, selected, Some(color), tip)
         } else {
-            let text_col = if selected { color } else { TEXT_SECONDARY };
+            let text_col = if selected { color } else { text_secondary(ui) };
             let mut job = egui::text::LayoutJob::default();
             let glyph_font = if selected { icon_fill_font(FONT_BODY + 1.0) } else { FontId::proportional(FONT_BODY + 1.0) };
             job.append(glyph, 0.0, egui::TextFormat::simple(glyph_font, text_col));
@@ -367,7 +378,7 @@ pub fn flag_buttons(ui: &mut Ui, flag: crate::db::PickFlag, compact: bool) -> Op
             btn = if selected {
                 btn.fill(color.gamma_multiply(0.16)).stroke(Stroke::new(1.0_f32, color.gamma_multiply(0.7)))
             } else {
-                btn.fill(BG_CARD)
+                btn.fill(bg_card(ui))
             };
             ui.add(btn).on_hover_text(tip)
         };
@@ -439,12 +450,12 @@ pub fn paint_badge(
 /// Keyboard key-cap label used in the shortcut reference.
 pub fn keycap(ui: &mut Ui, key: &str) {
     egui::Frame::none()
-        .fill(BG_FIELD)
-        .stroke(Stroke::new(1.0_f32, BORDER_STRONG))
+        .fill(bg_field(ui))
+        .stroke(Stroke::new(1.0_f32, border_strong(ui)))
         .rounding(Rounding::same(3.0))
         .inner_margin(egui::Margin::symmetric(5.0, 1.0))
         .show(ui, |ui| {
-            ui.label(RichText::new(key).monospace().size(FONT_CAPTION).color(TEXT_PRIMARY));
+            ui.label(RichText::new(key).monospace().size(FONT_CAPTION).color(text_primary(ui)));
         });
 }
 
@@ -452,14 +463,50 @@ pub fn keycap(ui: &mut Ui, key: &str) {
 pub fn toolbar_divider(ui: &mut Ui) {
     ui.add_space(2.0);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(1.0, 16.0), Sense::hover());
-    ui.painter().rect_filled(rect, Rounding::ZERO, BORDER_STRONG);
+    ui.painter().rect_filled(rect, Rounding::ZERO, border_strong(ui));
     ui.add_space(2.0);
 }
 
 /// Standard panel frame helpers.
-pub fn toolbar_frame() -> egui::Frame {
+pub fn toolbar_frame(ui: &Ui) -> egui::Frame {
     egui::Frame::none()
-        .fill(BG_PANEL)
+        .fill(ui.visuals().panel_fill)
         .inner_margin(egui::Margin::symmetric(8.0, 5.0))
         .stroke(Stroke::NONE)
+}
+
+/// Renders a reliable, crisp 6-dot drag grip handle for tree rows and reorderable items.
+/// Returns the drag/click response with Grab / Grabbing cursor.
+pub fn drag_handle(ui: &mut Ui, is_dragged: bool) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(16.0, 22.0), Sense::click_and_drag());
+    let is_hover = resp.hovered();
+    let dot_col = if is_dragged {
+        ACCENT
+    } else if is_hover {
+        ACCENT_HOVER
+    } else {
+        text_muted(ui)
+    };
+
+    if is_dragged {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    } else if is_hover {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+    }
+
+    let painter = ui.painter();
+    let cx = rect.center().x;
+    let cy = rect.center().y;
+    let dx = 2.5_f32;
+    let dy = 3.5_f32;
+    let r = 1.25_f32;
+
+    // Draw 2 columns of 3 circular dots
+    for &ox in &[-dx, dx] {
+        for &oy in &[-dy, 0.0, dy] {
+            painter.circle_filled(Pos2::new(cx + ox, cy + oy), r, dot_col);
+        }
+    }
+
+    resp
 }

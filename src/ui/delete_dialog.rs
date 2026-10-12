@@ -89,7 +89,7 @@ impl DeleteConfirmDialog {
                                 if count == 1 { "" } else { "s" }
                             ))
                             .strong()
-                            .color(TEXT_PRIMARY)
+                            .color(text_primary(ui))
                         );
                         ui.add_space(4.0);
                         ui.label(
@@ -97,7 +97,7 @@ impl DeleteConfirmDialog {
                                 "This will only remove the metadata, ratings, and tags from the catalog database.\nYour original RAW files on disk will NOT be deleted or moved."
                             )
                             .size(FONT_SMALL)
-                            .color(TEXT_SECONDARY)
+                            .color(text_secondary(ui))
                         );
                     }
                     DeleteMode::MoveToTrash => {
@@ -116,7 +116,7 @@ impl DeleteConfirmDialog {
                                 "This will move the actual MLV file(s) and any spanned companion slices (.M00, .M01) on disk directly into your operating system's Trash."
                             )
                             .size(FONT_SMALL)
-                            .color(TEXT_SECONDARY)
+                            .color(text_secondary(ui))
                         );
                     }
                 }
@@ -126,16 +126,16 @@ impl DeleteConfirmDialog {
                 ui.add_space(6.0);
 
                 // Preview clip names (up to 4)
-                ui.label(RichText::new("Target clips:").size(FONT_CAPTION).color(TEXT_MUTED));
+                ui.label(RichText::new("Target clips:").size(FONT_CAPTION).color(text_muted(ui)));
                 egui::ScrollArea::vertical().max_height(60.0).show(ui, |ui| {
                     for name in self.file_names.iter().take(6) {
-                        ui.label(RichText::new(format!("  • {}", name)).size(FONT_SMALL).monospace().color(TEXT_PRIMARY));
+                        ui.label(RichText::new(format!("  • {}", name)).size(FONT_SMALL).monospace().color(text_primary(ui)));
                     }
                     if self.file_names.len() > 6 {
                         ui.label(
                             RichText::new(format!("    … and {} more", self.file_names.len() - 6))
                                 .size(FONT_CAPTION)
-                                .color(TEXT_MUTED)
+                                .color(text_muted(ui))
                         );
                     }
                 });

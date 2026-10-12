@@ -68,15 +68,17 @@ impl GridView {
         selected_indices: &[usize],
         thumb_mgr: &mut ThumbnailManager,
         sort_order: &mut SortOrder,
+        has_modal_open: bool,
     ) -> Option<GridAction> {
         let mut action = None;
 
         // Top toolbar for Sort, Grouping, Zoom & Library Stats
+        let is_dark = ui.visuals().dark_mode;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
 
             // Sort Selector
-            ui.label(RichText::new("Sort:").size(FONT_SMALL).color(TEXT_MUTED));
+            ui.label(RichText::new("Sort:").size(FONT_SMALL).color(text_muted(ui)));
             egui::ComboBox::from_id_salt("grid_sort_selector")
                 .selected_text(RichText::new(sort_order.label()).size(FONT_SMALL))
                 .show_ui(ui, |ui| {
@@ -90,13 +92,19 @@ impl GridView {
             widgets::toolbar_divider(ui);
 
             // Group by Day Toggle
+            let (grp_bg, grp_stroke, grp_text_col) = if self.group_by_day {
+                let fill = if is_dark { ACCENT_DIM } else { ACCENT };
+                (fill, Stroke::new(1.0_f32, ACCENT), Color32::WHITE)
+            } else {
+                (Color32::TRANSPARENT, Stroke::NONE, text_secondary(ui))
+            };
             let group_btn = egui::Button::new(
                 RichText::new(format!("{}  Group by Day", icon::CALENDAR))
                     .size(FONT_SMALL)
-                    .color(if self.group_by_day { Color32::WHITE } else { TEXT_SECONDARY }),
+                    .color(grp_text_col),
             )
-            .fill(if self.group_by_day { ACCENT_DIM } else { Color32::TRANSPARENT })
-            .stroke(if self.group_by_day { Stroke::new(1.0_f32, ACCENT) } else { Stroke::NONE })
+            .fill(grp_bg)
+            .stroke(grp_stroke)
             .rounding(Rounding::same(ROUNDING))
             .min_size(Vec2::new(0.0, CONTROL_HEIGHT));
 
@@ -111,7 +119,7 @@ impl GridView {
             widgets::toolbar_divider(ui);
 
             // Thumbnail Zoom Slider
-            ui.label(RichText::new("Zoom:").size(FONT_SMALL).color(TEXT_MUTED));
+            ui.label(RichText::new("Zoom:").size(FONT_SMALL).color(text_muted(ui)));
             ui.add(
                 egui::Slider::new(&mut self.card_size, 180.0..=440.0)
                     .show_value(false)
@@ -129,24 +137,24 @@ impl GridView {
                         format_duration(total_dur)
                     ))
                     .size(FONT_CAPTION)
-                    .color(TEXT_MUTED),
+                    .color(text_muted(ui)),
                 );
             });
         });
 
         ui.add_space(2.0);
         let (sep_rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), egui::Sense::hover());
-        ui.painter().rect_filled(sep_rect, Rounding::ZERO, BORDER_SUBTLE);
+        ui.painter().rect_filled(sep_rect, Rounding::ZERO, border_subtle(ui));
         ui.add_space(4.0);
 
         if videos.is_empty() {
             ui.vertical_centered(|ui| {
                 ui.add_space(100.0);
-                ui.label(RichText::new(icon::FILM_STRIP).size(48.0).color(TEXT_DISABLED));
+                ui.label(RichText::new(icon::FILM_STRIP).size(48.0).color(text_disabled(ui)));
                 ui.add_space(8.0);
-                ui.label(RichText::new("No Magic Lantern Clips Matching Filter").size(15.0).strong().color(TEXT_PRIMARY));
+                ui.label(RichText::new("No Magic Lantern Clips Matching Filter").size(15.0).strong().color(text_primary(ui)));
                 ui.add_space(4.0);
-                ui.label(RichText::new("Drag and drop .MLV files or folders anywhere onto the window.").size(FONT_SMALL).color(TEXT_HINT));
+                ui.label(RichText::new("Drag and drop .MLV files or folders anywhere onto the window.").size(FONT_SMALL).color(text_hint(ui)));
             });
             return action;
         }
@@ -194,8 +202,8 @@ impl GridView {
                     painter.rect(
                         banner_rect,
                         Rounding::same(ROUNDING),
-                        BG_SECTION,
-                        Stroke::new(1.0_f32, BORDER_SUBTLE),
+                        bg_section(ui),
+                        Stroke::new(1.0_f32, border_subtle(ui)),
                     );
 
                     // Left title
@@ -204,7 +212,7 @@ impl GridView {
                         Align2::LEFT_CENTER,
                         format!("{}  {}", icon::CALENDAR, grp.title),
                         egui::FontId::proportional(FONT_BODY),
-                        TEXT_PRIMARY,
+                        text_primary(ui),
                     );
 
                     // Right stats
@@ -219,7 +227,7 @@ impl GridView {
                         Align2::RIGHT_CENTER,
                         grp_info,
                         egui::FontId::proportional(FONT_CAPTION),
-                        TEXT_MUTED,
+                        text_muted(ui),
                     );
 
                     ui.add_space(6.0);
@@ -301,7 +309,16 @@ impl GridView {
             Pos2::new(inner_rect.max.x - scrollbar_gutter_w, inner_rect.max.y),
         );
 
-        if pointer.primary_pressed() {
+        if has_modal_open {
+            self.drag_start_pos = None;
+            self.drag_current_pos = None;
+        }
+
+        let is_pointer_over_ui_layer = ui.ctx().is_pointer_over_area()
+            || ui.ctx().dragged_id().is_some()
+            || ui.ctx().wants_pointer_input();
+
+        if !has_modal_open && !is_pointer_over_ui_layer && pointer.primary_pressed() {
             if let Some(press_pos) = pointer.press_origin() {
                 if valid_selection_rect.contains(press_pos) {
                     let hit_tooltip = self.scrollbar_tooltip_rect.map_or(false, |r| r.expand(6.0).contains(press_pos));
@@ -314,54 +331,59 @@ impl GridView {
             }
         }
 
-        if self.drag_start_pos.is_some() {
+        if !has_modal_open && self.drag_start_pos.is_some() {
             if pointer.primary_down() {
                 if let Some(pos) = pointer.latest_pos() {
                     self.drag_current_pos = Some(pos);
                     ui.ctx().request_repaint();
                 }
             }
+        } else if has_modal_open {
+            self.drag_start_pos = None;
+            self.drag_current_pos = None;
         }
 
-        if let (Some(start), Some(curr)) = (self.drag_start_pos, self.drag_current_pos) {
-            let drag_dist = (curr - start).length();
-            if drag_dist > 4.0 {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
-                let box_rect = Rect::from_two_pos(start, curr);
+        if !has_modal_open {
+            if let (Some(start), Some(curr)) = (self.drag_start_pos, self.drag_current_pos) {
+                let drag_dist = (curr - start).length();
+                if drag_dist > 4.0 {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                    let box_rect = Rect::from_two_pos(start, curr);
 
-                // Draw translucent selection rectangle with subtle accent border
-                let painter = ui.ctx().layer_painter(egui::LayerId::new(
-                    egui::Order::Foreground,
-                    egui::Id::new("grid_selection_box"),
-                ));
-                painter.rect(
-                    box_rect,
-                    Rounding::same(ROUNDING),
-                    ACCENT.gamma_multiply(0.18),
-                    Stroke::new(1.0_f32, ACCENT),
-                );
+                    // Draw translucent selection rectangle with subtle accent border
+                    let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                        egui::Order::Foreground,
+                        egui::Id::new("grid_selection_box"),
+                    ));
+                    painter.rect(
+                        box_rect,
+                        Rounding::same(ROUNDING),
+                        ACCENT.gamma_multiply(0.18),
+                        Stroke::new(1.0_f32, ACCENT),
+                    );
 
-                let selected_in_box: Vec<usize> = card_rects
-                    .iter()
-                    .filter(|(_, r)| r.intersects(box_rect))
-                    .map(|(idx, _)| *idx)
-                    .collect();
+                    let selected_in_box: Vec<usize> = card_rects
+                        .iter()
+                        .filter(|(_, r)| r.intersects(box_rect))
+                        .map(|(idx, _)| *idx)
+                        .collect();
 
-                if pointer.primary_released() {
+                    if pointer.primary_released() {
+                        self.drag_start_pos = None;
+                        self.drag_current_pos = None;
+                        action = Some(GridAction::BoxSelect(selected_in_box));
+                    }
+                } else if pointer.primary_released() {
                     self.drag_start_pos = None;
                     self.drag_current_pos = None;
-                    action = Some(GridAction::BoxSelect(selected_in_box));
-                }
-            } else if pointer.primary_released() {
-                self.drag_start_pos = None;
-                self.drag_current_pos = None;
-                if action.is_none() {
-                    action = Some(GridAction::DeselectAll);
+                    if action.is_none() {
+                        action = Some(GridAction::DeselectAll);
+                    }
                 }
             }
         }
 
-        if pointer.primary_released() {
+        if pointer.primary_released() || has_modal_open {
             self.drag_start_pos = None;
             self.drag_current_pos = None;
         }
@@ -466,15 +488,15 @@ impl GridView {
                 painter.rect(
                     bubble_rect,
                     Rounding::same(ROUNDING),
-                    BG_PANEL,
-                    Stroke::new(1.0_f32, BORDER_STRONG),
+                    bg_card(ui),
+                    Stroke::new(1.0_f32, border_strong(ui)),
                 );
 
                 // Text with calendar icon
                 painter.galley(
                     Pos2::new(bubble_rect.min.x + padding_x, bubble_rect.min.y + padding_y),
                     text_layout,
-                    TEXT_PRIMARY,
+                    text_primary(ui),
                 );
 
                 ui.ctx().request_repaint();
@@ -483,6 +505,10 @@ impl GridView {
             }
         } else {
             self.scrollbar_tooltip_rect = None;
+        }
+
+        if has_modal_open {
+            return None;
         }
 
         action

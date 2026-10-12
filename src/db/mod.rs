@@ -136,6 +136,11 @@ impl Database {
     }
 
     #[inline]
+    pub fn rename_tag(&self, old_name: &str, new_name: &str) -> Result<()> {
+        self.queries().rename_tag(old_name, new_name)
+    }
+
+    #[inline]
     pub fn delete_keyword(&self, tag_name: &str) -> Result<()> {
         self.queries().delete_keyword(tag_name)
     }

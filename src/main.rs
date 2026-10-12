@@ -9,6 +9,7 @@ pub mod mlv;
 pub mod playback;
 pub mod thumbnails;
 pub mod ui;
+pub mod updater;
 
 use app::MlvExplorerApp;
 use eframe::egui;

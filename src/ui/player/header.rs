@@ -22,7 +22,7 @@ impl HeaderBar {
             let back_btn = egui::Button::new(
                 RichText::new(format!("{}  Grid", icon::CARET_LEFT))
                     .size(FONT_BODY)
-                    .color(TEXT_PRIMARY),
+                    .color(text_primary(ui)),
             )
             .min_size(Vec2::new(0.0, CONTROL_HEIGHT));
 
@@ -33,17 +33,17 @@ impl HeaderBar {
             widgets::toolbar_divider(ui);
 
             // Clip Name
-            ui.label(RichText::new(&video.file_name).strong().size(FONT_BODY).color(TEXT_PRIMARY));
+            ui.label(RichText::new(&video.file_name).strong().size(FONT_BODY).color(text_primary(ui)));
 
             // Metadata Badges
-            ui.label(RichText::new(format!("{} × {}", video.width, video.height)).size(FONT_SMALL).color(TEXT_MUTED));
-            ui.label(RichText::new("·").color(TEXT_MUTED));
-            ui.label(RichText::new(widgets::format_fps(video.fps)).size(FONT_SMALL).color(TEXT_MUTED));
-            ui.label(RichText::new("·").color(TEXT_MUTED));
-            ui.label(RichText::new(&video.codec).size(FONT_SMALL).color(TEXT_MUTED));
+            ui.label(RichText::new(format!("{} × {}", video.width, video.height)).size(FONT_SMALL).color(text_muted(ui)));
+            ui.label(RichText::new("·").color(text_muted(ui)));
+            ui.label(RichText::new(widgets::format_fps(video.fps)).size(FONT_SMALL).color(text_muted(ui)));
+            ui.label(RichText::new("·").color(text_muted(ui)));
+            ui.label(RichText::new(&video.codec).size(FONT_SMALL).color(text_muted(ui)));
 
             if video.chunk_count > 1 {
-                ui.label(RichText::new("·").color(TEXT_MUTED));
+                ui.label(RichText::new("·").color(text_muted(ui)));
                 ui.label(
                     RichText::new(format!("{} Spanned ({} files)", icon::STACK, video.chunk_count))
                         .size(FONT_SMALL)
@@ -56,7 +56,7 @@ impl HeaderBar {
             }
 
             if let Some(slate) = video.slate_label() {
-                ui.label(RichText::new("·").color(TEXT_MUTED));
+                ui.label(RichText::new("·").color(text_muted(ui)));
                 ui.label(
                     RichText::new(format!("{} {}", icon::FILM_STRIP, slate))
                         .size(FONT_SMALL)
@@ -96,7 +96,7 @@ impl HeaderBar {
                 let ready_ahead = playback.ready_ahead(view.current_frame, 24);
                 let is_realtime = ready_ahead >= 3 || (!view.is_playing && playback.is_ready(view.current_frame));
                 let (status_text, status_col) = if !view.is_playing {
-                    (format!("READY ({})", playback.cache_count()), TEXT_SECONDARY)
+                    (format!("READY ({})", playback.cache_count()), text_secondary(ui))
                 } else if is_realtime {
                     ("REAL-TIME".to_string(), FLAG_PICKED)
                 } else {

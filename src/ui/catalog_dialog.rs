@@ -62,11 +62,11 @@ impl SettingsDialog {
                     // ==========================================
                     widgets::section(ui, "Catalog Management", true, None, |ui| {
                         // Current Catalog Path
-                        ui.label(RichText::new("Active Catalog:").size(FONT_CAPTION).color(TEXT_MUTED));
+                        ui.label(RichText::new("Active Catalog:").size(FONT_CAPTION).color(text_muted(ui)));
                         ui.horizontal(|ui| {
                             let path_str = db.path.to_string_lossy();
                             ui.add(
-                                egui::Label::new(RichText::new(path_str.as_ref()).size(FONT_SMALL).monospace().color(TEXT_PRIMARY))
+                                egui::Label::new(RichText::new(path_str.as_ref()).size(FONT_SMALL).monospace().color(text_primary(ui)))
                                     .truncate(),
                             );
                         });
@@ -172,8 +172,8 @@ impl SettingsDialog {
                     widgets::section(ui, "Backups (Catalog Only)", true, None, |ui| {
                         // Prominent note explaining backups are catalog-only
                         egui::Frame::none()
-                            .fill(BG_FIELD)
-                            .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                            .fill(bg_field(ui))
+                            .stroke(Stroke::new(1.0_f32, border_subtle(ui)))
                             .rounding(egui::Rounding::same(ROUNDING))
                             .inner_margin(egui::Margin::symmetric(8.0, 6.0))
                             .show(ui, |ui| {
@@ -184,7 +184,7 @@ impl SettingsDialog {
                                             "Catalog backups save your metadata, ratings, keywords, slate, and notes.\nOriginal RAW video files on disk are NOT duplicated or moved."
                                         )
                                         .size(FONT_SMALL)
-                                        .color(TEXT_SECONDARY),
+                                        .color(text_secondary(ui)),
                                     );
                                 });
                             });
@@ -192,7 +192,7 @@ impl SettingsDialog {
                         ui.add_space(4.0);
 
                         // Backup folder configuration
-                        ui.label(RichText::new("Backup Folder:").size(FONT_CAPTION).color(TEXT_MUTED));
+                        ui.label(RichText::new("Backup Folder:").size(FONT_CAPTION).color(text_muted(ui)));
                         ui.horizontal(|ui| {
                             let folder_display = config
                                 .backup_folder
@@ -202,7 +202,7 @@ impl SettingsDialog {
 
                             ui.add_sized(
                                 [ui.available_width() - 90.0, CONTROL_HEIGHT],
-                                egui::Label::new(RichText::new(folder_display).size(FONT_SMALL).monospace().color(TEXT_PRIMARY))
+                                egui::Label::new(RichText::new(folder_display).size(FONT_SMALL).monospace().color(text_primary(ui)))
                                     .truncate(),
                             );
 
@@ -275,7 +275,7 @@ impl SettingsDialog {
                     // 3. EXTERNAL APPLICATIONS (MLV App)
                     // ==========================================
                     widgets::section(ui, "MLV App Integration", true, None, |ui| {
-                        ui.label(RichText::new("Executable Path:").size(FONT_CAPTION).color(TEXT_MUTED));
+                        ui.label(RichText::new("Executable Path:").size(FONT_CAPTION).color(text_muted(ui)));
                         ui.horizontal(|ui| {
                             let text_w = ui.available_width() - 170.0;
                             let resp = ui.add_sized(

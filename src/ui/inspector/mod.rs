@@ -30,7 +30,7 @@ impl Inspector {
             Align2::LEFT_CENTER,
             "Metadata",
             FontId::proportional(FONT_BODY + 0.5),
-            TEXT_PRIMARY,
+            text_primary(ui),
         );
         if selected_count > 1 {
             crate::ui::widgets::paint_badge(
@@ -43,22 +43,24 @@ impl Inspector {
                 ACCENT_DIM,
             );
         }
-        painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0_f32, BORDER_SUBTLE));
+        painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0_f32, border_subtle(ui)));
 
         let Some(vid) = video else {
             ui.add_space(60.0);
             ui.vertical_centered(|ui| {
-                ui.label(RichText::new(icon::FILM_STRIP).size(32.0).color(TEXT_DISABLED));
+                ui.label(RichText::new(icon::FILM_STRIP).size(32.0).color(text_disabled(ui)));
                 ui.add_space(6.0);
-                ui.label(RichText::new("No clip selected").color(TEXT_MUTED));
-                ui.label(RichText::new("Select a clip to view its metadata").size(FONT_SMALL).color(TEXT_HINT));
+                ui.label(RichText::new("No clip selected").color(text_muted(ui)));
+                ui.label(RichText::new("Select a clip to view its metadata").size(FONT_SMALL).color(text_hint(ui)));
             });
             return None;
         };
 
         if selected_count > 1 {
+            let is_dark = ui.visuals().dark_mode;
+            let banner_bg = if is_dark { ACCENT_DIM.gamma_multiply(0.55) } else { egui::Color32::from_rgb(225, 238, 255) };
             egui::Frame::none()
-                .fill(ACCENT_DIM.gamma_multiply(0.55))
+                .fill(banner_bg)
                 .inner_margin(egui::Margin::symmetric(PANEL_PADDING, 6.0))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
@@ -69,7 +71,7 @@ impl Inspector {
                                 "Batch edit: changes apply to all {selected_count} selected clips."
                             ))
                             .size(FONT_SMALL)
-                            .color(TEXT_PRIMARY),
+                            .color(text_primary(ui)),
                         );
                     });
                 });
@@ -99,7 +101,7 @@ impl Inspector {
 
                 // Bottom rule closing the last section
                 let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
-                ui.painter().rect_filled(r, Rounding::ZERO, BORDER_SUBTLE);
+                ui.painter().rect_filled(r, Rounding::ZERO, border_subtle(ui));
             });
 
         action

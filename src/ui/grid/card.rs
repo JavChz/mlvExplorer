@@ -86,19 +86,19 @@ impl Card {
 
         // Card background & borders
         let bg_color = if is_selected {
-            BG_CARD_SELECTED
+            bg_card_selected(ui)
         } else if response.hovered() {
-            BG_CARD_HOVER
+            bg_card_hover(ui)
         } else {
-            BG_CARD
+            bg_card(ui)
         };
 
         let border_stroke = if is_selected {
             Stroke::new(1.5_f32, BORDER_SELECTED)
         } else if response.hovered() {
-            Stroke::new(1.0_f32, BORDER_STRONG)
+            Stroke::new(1.0_f32, border_strong(ui))
         } else {
-            Stroke::new(1.0_f32, BORDER_SUBTLE)
+            Stroke::new(1.0_f32, border_subtle(ui))
         };
 
         painter.rect(rect, Rounding::same(ROUNDING + 1.0), bg_color, border_stroke);
@@ -236,7 +236,7 @@ impl Card {
             Align2::LEFT_TOP,
             elided_fname,
             fname_font,
-            TEXT_PRIMARY,
+            text_primary(ui),
         );
         cursor_y += 18.0;
 
@@ -249,7 +249,7 @@ impl Card {
             Align2::LEFT_TOP,
             elided_specs,
             specs_font,
-            TEXT_MUTED,
+            text_muted(ui),
         );
         cursor_y += 16.0;
 

@@ -8,7 +8,8 @@ pub struct TechnicalSpecs;
 impl TechnicalSpecs {
     pub fn show(ui: &mut Ui, vid: &mut VideoRecord, db: &Database) -> Option<crate::ui::inspector::InspectorAction> {
         let mut action = None;
-        let dash = || RichText::new("—").color(TEXT_MUTED);
+        let muted = text_muted(ui);
+        let dash = || RichText::new("—").color(muted);
 
         // Camera & lens metadata
         widgets::section(ui, "Camera", true, None, |ui| {
@@ -21,7 +22,7 @@ impl TechnicalSpecs {
                 widgets::prop_row(ui, "Serial #", vid.camera_serial.as_str());
             }
             if vid.lens_name.is_empty() {
-                widgets::prop_row(ui, "Lens", RichText::new("Manual lens").color(TEXT_MUTED));
+                widgets::prop_row(ui, "Lens", RichText::new("Manual lens").color(muted));
             } else {
                 widgets::prop_row(ui, "Lens", vid.lens_name.as_str());
             }
@@ -71,7 +72,7 @@ impl TechnicalSpecs {
             if vid.has_audio {
                 widgets::prop_row(ui, "Audio", "Linear PCM (WAV)");
             } else {
-                widgets::prop_row(ui, "Audio", RichText::new("None").color(TEXT_MUTED));
+                widgets::prop_row(ui, "Audio", RichText::new("None").color(muted));
             }
             if vid.chunk_count > 1 {
                 widgets::field_row(ui, "Spanned Media", |ui| {
@@ -105,7 +106,7 @@ impl LocationSection {
     pub fn show(ui: &mut Ui, file_path: &str) {
         widgets::section(ui, "File", true, None, |ui| {
             ui.add(
-                egui::Label::new(RichText::new(file_path).monospace().size(FONT_CAPTION).color(TEXT_SECONDARY))
+                egui::Label::new(RichText::new(file_path).monospace().size(FONT_CAPTION).color(text_secondary(ui)))
                     .wrap(),
             );
             ui.add_space(6.0);

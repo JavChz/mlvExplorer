@@ -369,15 +369,38 @@ impl<'a> Queries<'a> {
     }
 
     pub fn set_tag_parent(&self, tag_id: i64, parent_id: Option<i64>) -> Result<()> {
-        // Prevent cycle (tag cannot be parent of itself)
         if let Some(pid) = parent_id {
             if pid == tag_id {
                 return Ok(());
+            }
+            // Check if pid is already a descendant of tag_id (would create a cycle)
+            let mut curr = Some(pid);
+            while let Some(c) = curr {
+                if c == tag_id {
+                    return Ok(()); // Cycle detected, refuse to set
+                }
+                curr = self.conn.query_row(
+                    "SELECT parent_id FROM tags WHERE id = ?1",
+                    params![c],
+                    |r| r.get(0),
+                ).optional()?;
             }
         }
         self.conn.execute(
             "UPDATE tags SET parent_id = ?1 WHERE id = ?2",
             params![parent_id, tag_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn rename_tag(&self, old_name: &str, new_name: &str) -> Result<()> {
+        let clean = new_name.trim();
+        if clean.is_empty() {
+            return Ok(());
+        }
+        self.conn.execute(
+            "UPDATE tags SET name = ?1 WHERE name = ?2",
+            params![clean, old_name],
         )?;
         Ok(())
     }

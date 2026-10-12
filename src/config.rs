@@ -4,6 +4,19 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ThemeMode {
+    Dark,
+    Light,
+    System,
+}
+
+impl Default for ThemeMode {
+    fn default() -> Self {
+        Self::Dark
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     /// Path to the last opened catalog SQLite database (.db).
@@ -12,6 +25,9 @@ pub struct AppConfig {
     pub backup_folder: Option<PathBuf>,
     /// Custom path to the MLV App executable.
     pub mlv_app_path: Option<PathBuf>,
+    /// Selected UI theme mode (Dark, Light, System)
+    #[serde(default)]
+    pub theme_mode: ThemeMode,
 }
 
 impl Default for AppConfig {
@@ -20,6 +36,7 @@ impl Default for AppConfig {
             last_catalog_path: None,
             backup_folder: None,
             mlv_app_path: None,
+            theme_mode: ThemeMode::Dark,
         }
     }
 }

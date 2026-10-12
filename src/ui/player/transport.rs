@@ -20,7 +20,7 @@ impl TransportBar {
         let mut action = None;
 
         egui::Frame::none()
-            .fill(BG_PANEL)
+            .fill(ui.visuals().panel_fill)
             .inner_margin(egui::Margin::symmetric(8.0, 4.0))
             .show(ui, |ui| {
                 // A. Scrubber Playbar
@@ -52,19 +52,19 @@ impl TransportBar {
                             .monospace()
                             .strong()
                             .size(13.5)
-                            .color(Color32::WHITE),
+                            .color(text_primary(ui)),
                     );
                     ui.label(
                         RichText::new(format!("/  {}", tc_tot))
                             .monospace()
                             .size(FONT_SMALL)
-                            .color(TEXT_MUTED),
+                            .color(text_muted(ui)),
                     );
                     ui.label(
                         RichText::new(format!("[{}/{}]", view.current_frame + 1, total_frames))
                             .monospace()
                             .size(FONT_CAPTION)
-                            .color(TEXT_SECONDARY),
+                            .color(text_secondary(ui)),
                     );
 
                     ui.add_space(12.0);
@@ -91,10 +91,10 @@ impl TransportBar {
                     let play_btn = egui::Button::new(
                         RichText::new(play_glyph)
                             .size(15.0)
-                            .color(Color32::WHITE),
+                            .color(if view.is_playing { Color32::WHITE } else { text_primary(ui) }),
                     )
-                    .fill(if view.is_playing { ACCENT } else { BG_CARD })
-                    .stroke(if view.is_playing { Stroke::new(1.0_f32, ACCENT_HOVER) } else { Stroke::new(1.0_f32, BORDER_SUBTLE) })
+                    .fill(if view.is_playing { ACCENT } else { bg_card(ui) })
+                    .stroke(if view.is_playing { Stroke::new(1.0_f32, ACCENT_HOVER) } else { Stroke::new(1.0_f32, border_subtle(ui)) })
                     .rounding(Rounding::same(ROUNDING))
                     .min_size(Vec2::new(32.0, CONTROL_HEIGHT));
 
@@ -135,7 +135,7 @@ impl TransportBar {
                     widgets::toolbar_divider(ui);
 
                     // Speed Selector Pills
-                    ui.label(RichText::new("Speed:").size(FONT_SMALL).color(TEXT_MUTED));
+                    ui.label(RichText::new("Speed:").size(FONT_SMALL).color(text_muted(ui)));
                     for spd in [0.5, 1.0, 2.0, 4.0] {
                         let is_active = (view.playback_speed - spd).abs() < 0.05;
                         if widgets::toggle_button(ui, is_active, format!("{}x", spd)).clicked() {
@@ -178,7 +178,7 @@ impl TransportBar {
                             }
                         }
                     } else {
-                        ui.label(RichText::new("No Audio").size(FONT_CAPTION).color(TEXT_MUTED));
+                        ui.label(RichText::new("No Audio").size(FONT_CAPTION).color(text_muted(ui)));
                     }
 
                     // Right side: Quick Rating & Pick buttons on player bar!
