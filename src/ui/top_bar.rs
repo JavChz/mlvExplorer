@@ -281,19 +281,20 @@ impl TopBar {
     ) -> (bool, Option<TopBarAction>) {
         let mut filter_changed = false;
         let mut action = None;
+        let is_dark = ui.visuals().dark_mode;
 
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
+            ui.spacing_mut().item_spacing = egui::vec2(12.0, 0.0);
 
             // 1. Search Box with Dedicated Clear Button
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(3.0, 0.0);
-                let search_width = 190.0;
+                ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
+                let search_width = 210.0;
                 let search_edit = ui.add_sized(
-                    [search_width, 24.0],
+                    [search_width, 28.0],
                     egui::TextEdit::singleline(&mut filter.search_text)
                         .hint_text(widgets::hint("Search clips, cameras, lenses…"))
-                        .margin(egui::vec2(6.0, 4.0)),
+                        .margin(egui::vec2(8.0, 5.0)),
                 );
                 if search_edit.changed() {
                     filter_changed = true;
@@ -310,111 +311,188 @@ impl TopBar {
             widgets::toolbar_divider(ui);
 
             // 2. Sort Selector
-            ui.label(RichText::new("Sort:").size(FONT_SMALL).color(text_muted(ui)));
-            egui::ComboBox::from_id_salt("topbar_sort_order_combo")
-                .selected_text(RichText::new(filter.sort.label()).size(FONT_SMALL))
-                .show_ui(ui, |ui| {
-                    for sort_opt in SortOrder::ALL {
-                        if ui.selectable_value(&mut filter.sort, sort_opt, sort_opt.label()).clicked() {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
+                ui.label(RichText::new("Sort:").size(FONT_BODY).color(text_muted(ui)));
+                egui::ComboBox::from_id_salt("topbar_sort_order_combo")
+                    .selected_text(RichText::new(filter.sort.label()).size(FONT_BODY))
+                    .height(28.0)
+                    .show_ui(ui, |ui| {
+                        for sort_opt in SortOrder::ALL {
+                            if ui.selectable_value(&mut filter.sort, sort_opt, sort_opt.label()).clicked() {
+                                filter_changed = true;
+                            }
+                        }
+                    });
+            });
+
+            widgets::toolbar_divider(ui);
+
+            // 3. Rating Filter Segmented Pill Group
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
+                ui.label(RichText::new("Rating:").size(FONT_BODY).color(text_muted(ui)));
+
+                egui::Frame::none()
+                    .fill(bg_field(ui))
+                    .stroke(Stroke::new(1.0_f32, border_subtle(ui)))
+                    .rounding(Rounding::same(ROUNDING + 2.0))
+                    .inner_margin(egui::Margin::symmetric(3.0, 2.0))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
+
+                        // "All" segment
+                        let r_all = filter.min_rating.is_none();
+                        let all_btn = egui::Button::new(
+                            RichText::new("All")
+                                .size(FONT_SMALL + 0.5)
+                                .color(if r_all { Color32::WHITE } else { text_secondary(ui) })
+                                .strong(),
+                        )
+                        .fill(if r_all { if is_dark { ACCENT_DIM } else { ACCENT } } else { Color32::TRANSPARENT })
+                        .stroke(if r_all { Stroke::new(1.0_f32, ACCENT) } else { Stroke::NONE })
+                        .rounding(Rounding::same(ROUNDING))
+                        .min_size(Vec2::new(32.0, 24.0));
+
+                        if ui.add(all_btn).clicked() {
+                            filter.min_rating = None;
                             filter_changed = true;
                         }
-                    }
-                });
+
+                        // Star ratings (1★+ through 5★)
+                        for r in 1..=5 {
+                            let is_sel = filter.min_rating == Some(r);
+                            let star_label = format!("{}★+", r);
+                            let star_text_col = if is_sel {
+                                Color32::WHITE
+                            } else {
+                                text_secondary(ui)
+                            };
+                            let star_fill = if is_sel {
+                                if is_dark { ACCENT_DIM } else { ACCENT }
+                            } else {
+                                Color32::TRANSPARENT
+                            };
+
+                            let btn = egui::Button::new(
+                                RichText::new(star_label)
+                                    .size(FONT_SMALL + 0.5)
+                                    .color(star_text_col),
+                            )
+                            .fill(star_fill)
+                            .stroke(if is_sel { Stroke::new(1.0_f32, ACCENT) } else { Stroke::NONE })
+                            .rounding(Rounding::same(ROUNDING))
+                            .min_size(Vec2::new(36.0, 24.0));
+
+                            if ui.add(btn).on_hover_text(format!("Show clips rated {} stars or higher", r)).clicked() {
+                                filter.min_rating = if is_sel { None } else { Some(r) };
+                                filter_changed = true;
+                            }
+                        }
+                    });
+            });
 
             widgets::toolbar_divider(ui);
 
-            // 3. Rating Filter Quick Toggles (All, 1★+, 2★+, 3★+, 4★+, 5★)
-            ui.label(RichText::new("Rating:").size(FONT_SMALL).color(text_muted(ui)));
-            let r_all = filter.min_rating.is_none();
-            if widgets::toggle_button(ui, r_all, "All").clicked() {
-                filter.min_rating = None;
-                filter_changed = true;
-            }
-            let is_dark = ui.visuals().dark_mode;
-            for r in 1..=5 {
-                let is_sel = filter.min_rating == Some(r);
-                let star_label = format!("{}★+", r);
-                let star_text_col = if is_sel { RATING } else { text_secondary(ui) };
-                let star_fill = if is_sel {
-                    if is_dark { ACCENT_DIM } else { Color32::from_rgb(220, 234, 254) }
-                } else {
-                    Color32::TRANSPARENT
-                };
-                let btn = egui::Button::new(
-                    RichText::new(star_label)
-                        .size(FONT_CAPTION)
-                        .color(star_text_col),
-                )
-                .fill(star_fill)
-                .stroke(if is_sel { Stroke::new(1.0_f32, ACCENT) } else { Stroke::NONE })
-                .min_size(Vec2::new(0.0, 22.0));
+            // 4. Pick / Reject Flags Segmented Pill Group
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
+                ui.label(RichText::new("Flag:").size(FONT_BODY).color(text_muted(ui)));
 
-                if ui.add(btn).clicked() {
-                    filter.min_rating = if is_sel { None } else { Some(r) };
-                    filter_changed = true;
-                }
-            }
+                egui::Frame::none()
+                    .fill(bg_field(ui))
+                    .stroke(Stroke::new(1.0_f32, border_subtle(ui)))
+                    .rounding(Rounding::same(ROUNDING + 2.0))
+                    .inner_margin(egui::Margin::symmetric(3.0, 2.0))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
 
-            widgets::toolbar_divider(ui);
+                        // "All" segment
+                        let flag_all = filter.flag.is_none();
+                        let all_btn = egui::Button::new(
+                            RichText::new("All")
+                                .size(FONT_SMALL + 0.5)
+                                .color(if flag_all { Color32::WHITE } else { text_secondary(ui) })
+                                .strong(),
+                        )
+                        .fill(if flag_all { if is_dark { ACCENT_DIM } else { ACCENT } } else { Color32::TRANSPARENT })
+                        .stroke(if flag_all { Stroke::new(1.0_f32, ACCENT) } else { Stroke::NONE })
+                        .rounding(Rounding::same(ROUNDING))
+                        .min_size(Vec2::new(32.0, 24.0));
 
-            // 4. Pick / Reject Flags filter
-            ui.label(RichText::new("Flag:").size(FONT_SMALL).color(text_muted(ui)));
-            let flag_all = filter.flag.is_none();
-            if widgets::toggle_button(ui, flag_all, "All").clicked() {
-                filter.flag = None;
-                filter_changed = true;
-            }
+                        if ui.add(all_btn).clicked() {
+                            filter.flag = None;
+                            filter_changed = true;
+                        }
 
-            let is_pick = filter.flag == Some(PickFlag::Picked);
-            if widgets::icon_button_colored(
-                ui,
-                icon::FLAG,
-                is_pick,
-                Some(FLAG_PICKED),
-                "Filter Picked",
-            ).clicked() {
-                filter.flag = if is_pick { None } else { Some(PickFlag::Picked) };
-                filter_changed = true;
-            }
+                        // Picked Flag (Green)
+                        let is_pick = filter.flag == Some(PickFlag::Picked);
+                        let pick_btn = egui::Button::new(
+                            RichText::new(icon::FLAG)
+                                .size(14.0)
+                                .color(if is_pick { Color32::WHITE } else { FLAG_PICKED }),
+                        )
+                        .fill(if is_pick { FLAG_PICKED } else { Color32::TRANSPARENT })
+                        .stroke(if is_pick { Stroke::new(1.0_f32, FLAG_PICKED) } else { Stroke::NONE })
+                        .rounding(Rounding::same(ROUNDING))
+                        .min_size(Vec2::new(30.0, 24.0));
 
-            let is_rej = filter.flag == Some(PickFlag::Rejected);
-            if widgets::icon_button_colored(
-                ui,
-                icon::X_CIRCLE,
-                is_rej,
-                Some(FLAG_REJECTED),
-                "Filter Rejected",
-            ).clicked() {
-                filter.flag = if is_rej { None } else { Some(PickFlag::Rejected) };
-                filter_changed = true;
-            }
+                        if ui.add(pick_btn).on_hover_text("Show Picked clips [P]").clicked() {
+                            filter.flag = if is_pick { None } else { Some(PickFlag::Picked) };
+                            filter_changed = true;
+                        }
 
-            // Right-aligned Actions: Reset filter & Import Buttons
+                        // Rejected Flag (Red)
+                        let is_rej = filter.flag == Some(PickFlag::Rejected);
+                        let rej_btn = egui::Button::new(
+                            RichText::new(icon::X_CIRCLE)
+                                .size(14.0)
+                                .color(if is_rej { Color32::WHITE } else { FLAG_REJECTED }),
+                        )
+                        .fill(if is_rej { FLAG_REJECTED } else { Color32::TRANSPARENT })
+                        .stroke(if is_rej { Stroke::new(1.0_f32, FLAG_REJECTED) } else { Stroke::NONE })
+                        .rounding(Rounding::same(ROUNDING))
+                        .min_size(Vec2::new(30.0, 24.0));
+
+                        if ui.add(rej_btn).on_hover_text("Show Rejected clips [X]").clicked() {
+                            filter.flag = if is_rej { None } else { Some(PickFlag::Rejected) };
+                            filter_changed = true;
+                        }
+                    });
+            });
+
+            // Right-aligned Actions: Import Buttons (Clear filter button removed)
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(4.0);
 
-                if filter.is_filtered() {
-                    let reset_btn = egui::Button::new(
-                        RichText::new(format!("{} Reset", icon::ARROW_COUNTER_CLOCKWISE))
-                            .size(FONT_SMALL)
-                            .color(text_muted(ui)),
-                    )
-                    .fill(Color32::TRANSPARENT)
-                    .stroke(Stroke::new(1.0_f32, border_subtle(ui)))
-                    .min_size(Vec2::new(0.0, 24.0));
+                let import_file_btn = egui::Button::new(
+                    RichText::new(widgets::icon_label(icon::FILE_PLUS, "Import Files"))
+                        .size(FONT_BODY)
+                        .color(Color32::WHITE)
+                        .strong(),
+                )
+                .fill(ACCENT)
+                .stroke(Stroke::NONE)
+                .rounding(Rounding::same(ROUNDING))
+                .min_size(Vec2::new(0.0, 28.0));
 
-                    if ui.add(reset_btn).on_hover_text("Clear all filters").clicked() {
-                        *filter = FilterCriteria::default();
-                        filter_changed = true;
-                    }
-                    widgets::toolbar_divider(ui);
-                }
-
-                if widgets::primary_button(ui, widgets::icon_label(icon::FILE_PLUS, "Import Files")).clicked() {
+                if ui.add(import_file_btn).clicked() {
                     action = Some(TopBarAction::ImportFiles);
                 }
 
-                if widgets::button(ui, widgets::icon_label(icon::FOLDER_OPEN, "Import Folder")).clicked() {
+                ui.add_space(6.0);
+
+                let import_folder_btn = egui::Button::new(
+                    RichText::new(widgets::icon_label(icon::FOLDER_OPEN, "Import Folder"))
+                        .size(FONT_BODY)
+                        .color(text_primary(ui)),
+                )
+                .fill(bg_card(ui))
+                .stroke(Stroke::new(1.0_f32, border_subtle(ui)))
+                .rounding(Rounding::same(ROUNDING))
+                .min_size(Vec2::new(0.0, 28.0));
+
+                if ui.add(import_folder_btn).clicked() {
                     action = Some(TopBarAction::ImportFolder);
                 }
             });

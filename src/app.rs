@@ -753,10 +753,10 @@ impl eframe::App for MlvExplorerApp {
                     menu_action = TopBar::show_menu_bar(ui, is_player_mode, can_open_player);
                 });
 
-            // 2. Studio Workspace Toolbar (Search, Sort, Ratings, Flags, Zoom slider, Import buttons)
+            // 2. Studio Workspace Toolbar (Search, Sort, Ratings, Flags, Import buttons)
             let mut toolbar_action = None;
             egui::TopBottomPanel::top("app_workspace_toolbar")
-                .exact_height(42.0)
+                .exact_height(48.0)
                 .show(ctx, |ui| {
                     let (filter_changed, act) = TopBar::show_toolbar(
                         ui,

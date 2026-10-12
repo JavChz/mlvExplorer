@@ -340,6 +340,12 @@ mod tests {
         filter.tag = Some("France".to_string());
         let res_leaf = db.get_videos(&filter).unwrap();
         assert_eq!(res_leaf.len(), 1);
+        println!("France tags before: {:?}", res_leaf[0].tags);
+
+        db.add_tag(row_id, "Europe").unwrap();
+        let res_multi = db.get_videos(&FilterCriteria::default()).unwrap();
+        println!("Multi tags: {:?}", res_multi[0].tags);
+        assert_eq!(res_multi[0].tags, vec!["Europe".to_string(), "France".to_string()]);
 
         // 5. Test set_tag_parent under root tag (loc_id has NULL parent_id)
         let paris_id = db.create_tag("Paris", None).unwrap();
