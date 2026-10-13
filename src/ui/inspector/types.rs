@@ -5,6 +5,7 @@ pub enum InspectorAction {
     BatchAddTag(String),
     BatchRemoveTag(String),
     CreateKeywordWithParent { name: String, parent_id: Option<i64> },
+    OpenKeywordManager,
     FilterByTag(String),
     BatchSetNotes(String),
     BatchSetSlate {

@@ -15,6 +15,10 @@ pub struct KeywordManagerDialog {
     new_tag_parent_id: Option<i64>,
     editing_tag_id: Option<i64>,
     editing_tag_name: String,
+    focus_rename_input: bool,
+    adding_child_parent_id: Option<i64>,
+    adding_child_name: String,
+    focus_child_input: bool,
     reparenting_tag_id: Option<i64>,
     search_query: String,
     // Drag and drop state
@@ -30,6 +34,10 @@ impl KeywordManagerDialog {
         self.new_tag_parent_id = None;
         self.editing_tag_id = None;
         self.editing_tag_name.clear();
+        self.focus_rename_input = false;
+        self.adding_child_parent_id = None;
+        self.adding_child_name.clear();
+        self.focus_child_input = false;
         self.reparenting_tag_id = None;
         self.search_query.clear();
         self.dragged_tag_id = None;
@@ -76,6 +84,9 @@ impl KeywordManagerDialog {
                 }
 
                 // ── Top Header / Quick Add Keyword Card ──────────────────────────
+                let tree_for_combo = db.get_tag_tree().unwrap_or_default();
+                let flat_options = crate::db::flatten_tree_with_connectors(&tree_for_combo);
+
                 egui::Frame::none()
                     .fill(bg_card(ui))
                     .stroke(Stroke::new(1.0_f32, border_subtle(ui)))
@@ -85,51 +96,61 @@ impl KeywordManagerDialog {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
                             ui.label(RichText::new("Add Keyword:").strong().size(FONT_SMALL).color(text_primary(ui)));
-                            ui.add(
+                            let name_resp = ui.add(
                                 egui::TextEdit::singleline(&mut self.new_tag_name)
-                                    .hint_text("Enter name...")
-                                    .desired_width(150.0),
+                                    .hint_text("Enter name... [Enter]")
+                                    .desired_width(155.0),
                             );
 
-                            let all_tags = db.get_all_tags().unwrap_or_default();
+                            let enter_pressed = (name_resp.lost_focus() || name_resp.has_focus())
+                                && ui.input(|i| i.key_pressed(egui::Key::Enter));
+
                             let current_parent_label = self
                                 .new_tag_parent_id
-                                .and_then(|pid| all_tags.iter().find(|t| t.id == pid))
+                                .and_then(|pid| flat_options.iter().find(|t| t.id == pid))
                                 .map(|t| t.name.as_str())
                                 .unwrap_or("Root (Top Level)");
 
                             ui.label(RichText::new("Under:").size(FONT_CAPTION).color(text_muted(ui)));
                             egui::ComboBox::from_id_salt("new_keyword_parent_combo")
                                 .selected_text(RichText::new(current_parent_label).size(FONT_SMALL))
-                                .width(150.0)
+                                .width(175.0)
                                 .show_ui(ui, |ui| {
                                     if ui.selectable_label(self.new_tag_parent_id.is_none(), "Root (Top Level)").clicked() {
                                         self.new_tag_parent_id = None;
                                     }
-                                    for tag in &all_tags {
-                                        let is_sel = self.new_tag_parent_id == Some(tag.id);
-                                        if ui.selectable_label(is_sel, &tag.name).clicked() {
-                                            self.new_tag_parent_id = Some(tag.id);
+                                    for opt in &flat_options {
+                                        let is_sel = self.new_tag_parent_id == Some(opt.id);
+                                        if ui.selectable_label(is_sel, &opt.display_label).clicked() {
+                                            self.new_tag_parent_id = Some(opt.id);
                                         }
                                     }
                                 });
 
                             let can_add = !self.new_tag_name.trim().is_empty();
+                            let mut commit_new = enter_pressed && can_add;
                             ui.add_enabled_ui(can_add, |ui| {
                                 if widgets::primary_button(ui, widgets::icon_label(icon::PLUS, "Create")).clicked() {
-                                    let name = self.new_tag_name.trim().to_string();
-                                    match db.create_tag(&name, self.new_tag_parent_id) {
-                                        Ok(_) => {
-                                            self.status_message = Some((format!("Created keyword '{}'", name), false));
-                                            self.new_tag_name.clear();
-                                            action = Some(KeywordManagerAction::Changed);
-                                        }
-                                        Err(e) => {
-                                            self.status_message = Some((format!("Error adding keyword: {e}"), true));
-                                        }
-                                    }
+                                    commit_new = true;
                                 }
                             });
+
+                            if commit_new {
+                                let name = self.new_tag_name.trim().to_string();
+                                match db.create_tag(&name, self.new_tag_parent_id) {
+                                    Ok(_) => {
+                                        self.status_message = Some((format!("Created keyword '{}'", name), false));
+                                        self.new_tag_name.clear();
+                                        action = Some(KeywordManagerAction::Changed);
+                                        if enter_pressed {
+                                            name_resp.request_focus();
+                                        }
+                                    }
+                                    Err(e) => {
+                                        self.status_message = Some((format!("Error adding keyword: {e}"), true));
+                                    }
+                                }
+                            }
                         });
                     });
 
@@ -458,23 +479,26 @@ impl KeywordManagerDialog {
                 egui::TextEdit::singleline(&mut self.editing_tag_name)
                     .desired_width(140.0),
             );
-            if edit.lost_focus() && row_ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                if !self.editing_tag_name.trim().is_empty() {
-                    let _ = db.rename_tag(&node.name, &self.editing_tag_name);
-                    self.status_message = Some((format!("Renamed to '{}'", self.editing_tag_name), false));
-                    *action = Some(KeywordManagerAction::Changed);
-                }
-                self.editing_tag_id = None;
+            if self.focus_rename_input {
+                edit.request_focus();
+                self.focus_rename_input = false;
             }
+            let enter_pressed = (edit.lost_focus() || edit.has_focus())
+                && row_ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let esc_pressed = row_ui.input(|i| i.key_pressed(egui::Key::Escape));
 
-            if widgets::icon_button(&mut row_ui, icon::CHECK, false, "Save name").clicked() {
+            let mut save_rename = enter_pressed;
+            if widgets::icon_button(&mut row_ui, icon::CHECK, false, "Save name [Enter]").clicked() {
+                save_rename = true;
+            }
+            if esc_pressed || widgets::icon_button(&mut row_ui, icon::X, false, "Cancel [Esc]").clicked() {
+                self.editing_tag_id = None;
+            } else if save_rename {
                 if !self.editing_tag_name.trim().is_empty() {
                     let _ = db.rename_tag(&node.name, &self.editing_tag_name);
+                    self.status_message = Some((format!("Renamed to '{}'", self.editing_tag_name.trim()), false));
                     *action = Some(KeywordManagerAction::Changed);
                 }
-                self.editing_tag_id = None;
-            }
-            if widgets::icon_button(&mut row_ui, icon::X, false, "Cancel").clicked() {
                 self.editing_tag_id = None;
             }
         } else {
@@ -511,13 +535,20 @@ impl KeywordManagerDialog {
                 if widgets::icon_button(row_ui, icon::PENCIL_SIMPLE, false, "Rename keyword").clicked() {
                     self.editing_tag_id = Some(node.id);
                     self.editing_tag_name = node.name.clone();
+                    self.focus_rename_input = true;
                 }
             }
 
-            // Quick Add Child under this node
-            if widgets::icon_button(row_ui, icon::PLUS, false, "Add child keyword under this").clicked() {
-                self.new_tag_parent_id = Some(node.id);
-                self.status_message = Some((format!("Adding child keyword under '{}'. Enter name in top bar.", node.name), false));
+            // Quick Add Child under this node (opens inline input directly below this node)
+            let is_adding_child_here = self.adding_child_parent_id == Some(node.id);
+            if widgets::icon_button(row_ui, icon::PLUS, is_adding_child_here, "Add child keyword under this").clicked() {
+                if is_adding_child_here {
+                    self.adding_child_parent_id = None;
+                } else {
+                    self.adding_child_parent_id = Some(node.id);
+                    self.adding_child_name.clear();
+                    self.focus_child_input = true;
+                }
             }
 
             // Quick Move to Root (Un-nest) if currently nested
@@ -536,12 +567,13 @@ impl KeywordManagerDialog {
                 }
             }
 
-            // Reparent dropdown selector
+            // Reparent dropdown selector (hierarchical with tree connector lines)
             let is_reparenting = self.reparenting_tag_id == Some(node.id);
             if is_reparenting {
+                let flat_opts = crate::db::flatten_tree_with_connectors(full_tree);
                 egui::ComboBox::from_id_salt(("reparent_combo", node.id))
                     .selected_text(RichText::new("Parent...").size(FONT_CAPTION))
-                    .width(130.0)
+                    .width(160.0)
                     .show_ui(row_ui, |ui| {
                         if ui.selectable_label(node.parent_id.is_none(), "Root (Top Level)").clicked() {
                             match db.set_tag_parent(node.id, None) {
@@ -555,18 +587,18 @@ impl KeywordManagerDialog {
                             }
                             self.reparenting_tag_id = None;
                         }
-                        for t in all_tags {
-                            let is_disallowed = if t.id == node.id {
+                        for opt in &flat_opts {
+                            let is_disallowed = if opt.id == node.id {
                                 true
                             } else if let Some(curr_node) = Self::find_node_in_tree(full_tree, node.id) {
-                                Self::is_descendant_of(curr_node, t.id)
+                                Self::is_descendant_of(curr_node, opt.id)
                             } else {
                                 false
                             };
                             if !is_disallowed {
-                                let is_curr = node.parent_id == Some(t.id);
-                                if ui.selectable_label(is_curr, &t.name).clicked() {
-                                    match db.set_tag_parent(node.id, Some(t.id)) {
+                                let is_curr = node.parent_id == Some(opt.id);
+                                if ui.selectable_label(is_curr, &opt.display_label).clicked() {
+                                    match db.set_tag_parent(node.id, Some(opt.id)) {
                                         Ok(_) => {
                                             *action = Some(KeywordManagerAction::Changed);
                                             ui.ctx().request_repaint();
@@ -587,8 +619,93 @@ impl KeywordManagerDialog {
             }
         });
 
-        // 5. Recursively render child nodes with current card center as guide stem
         let current_y_center = full_row_rect.center().y;
+
+        // 4b. Inline "Add Child Keyword" Row directly below this parent node
+        if self.adding_child_parent_id == Some(node.id) {
+            let child_depth = depth + 1;
+            let child_indent = child_depth as f32 * indent_per_level;
+            let (child_full_rect, _) = ui.allocate_exact_size(
+                Vec2::new(available_w, 28.0),
+                egui::Sense::hover(),
+            );
+            let stem_x = child_full_rect.min.x + child_indent - (indent_per_level * 0.5);
+            let row_y = child_full_rect.center().y;
+
+            ui.painter().line_segment(
+                [Pos2::new(stem_x, current_y_center), Pos2::new(stem_x, row_y)],
+                Stroke::new(1.0_f32, ACCENT),
+            );
+            ui.painter().line_segment(
+                [Pos2::new(stem_x, row_y), Pos2::new(stem_x + 10.0, row_y)],
+                Stroke::new(1.0_f32, ACCENT),
+            );
+
+            let child_card_rect = Rect::from_min_max(
+                Pos2::new(child_full_rect.min.x + child_indent, child_full_rect.min.y),
+                child_full_rect.max,
+            );
+            ui.painter().rect(
+                child_card_rect,
+                Rounding::same(ROUNDING),
+                bg_card(ui),
+                Stroke::new(1.0_f32, ACCENT),
+            );
+
+            let mut child_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(child_card_rect.shrink(3.0))
+                    .layout(Layout::left_to_right(egui::Align::Center)),
+            );
+            child_ui.spacing_mut().item_spacing.x = 6.0;
+            child_ui.add_space(4.0);
+            child_ui.label(RichText::new(icon::TAG).size(FONT_SMALL).color(ACCENT));
+
+            let child_edit = child_ui.add(
+                egui::TextEdit::singleline(&mut self.adding_child_name)
+                    .hint_text(format!("New child under '{}'… [Enter]", node.name))
+                    .desired_width(180.0),
+            );
+            if self.focus_child_input {
+                child_edit.request_focus();
+                self.focus_child_input = false;
+            }
+
+            let enter_pressed = (child_edit.lost_focus() || child_edit.has_focus())
+                && child_ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let esc_pressed = child_ui.input(|i| i.key_pressed(egui::Key::Escape));
+
+            let can_save_child = !self.adding_child_name.trim().is_empty();
+            let mut commit_child = enter_pressed && can_save_child;
+
+            child_ui.add_enabled_ui(can_save_child, |ui| {
+                if widgets::icon_button(ui, icon::CHECK, true, "Create child keyword [Enter]").clicked() {
+                    commit_child = true;
+                }
+            });
+            if esc_pressed || widgets::icon_button(&mut child_ui, icon::X, false, "Cancel [Esc]").clicked() {
+                self.adding_child_parent_id = None;
+                self.adding_child_name.clear();
+            } else if commit_child {
+                let child_name = self.adding_child_name.trim().to_string();
+                match db.create_tag(&child_name, Some(node.id)) {
+                    Ok(_) => {
+                        self.status_message = Some((
+                            format!("Created child keyword '{}' under '{}'", child_name, node.name),
+                            false,
+                        ));
+                        self.adding_child_name.clear();
+                        self.adding_child_parent_id = None;
+                        *action = Some(KeywordManagerAction::Changed);
+                    }
+                    Err(e) => {
+                        self.status_message = Some((format!("Error creating child keyword: {e}"), true));
+                    }
+                }
+            }
+        }
+
+        // 5. Recursively render child nodes with current card center as guide stem
         for child in &node.children {
             self.render_tree_node(ui, child, all_tags, full_tree, db, depth + 1, Some(current_y_center), action);
         }

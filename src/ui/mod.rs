@@ -12,7 +12,7 @@ pub mod top_bar;
 pub mod widgets;
 
 pub use catalog_dialog::{SettingsAction, SettingsDialog};
-pub use delete_dialog::{DeleteConfirmDialog, DeleteConfirmResult, DeleteMode};
+pub use delete_dialog::{DeleteConfirmDialog, DeleteConfirmResult, DeleteMode, DeleteTargetClip};
 pub use grid::{GridAction, GridView};
 pub use help_dialogs::HelpDialogs;
 pub use inspector::Inspector;

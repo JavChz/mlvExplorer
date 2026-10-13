@@ -306,11 +306,31 @@ impl MlvExplorerApp {
         if indices.is_empty() {
             return;
         }
-        let file_names: Vec<String> = indices
+        let targets: Vec<crate::ui::DeleteTargetClip> = indices
             .iter()
-            .filter_map(|&idx| self.videos.get(idx).map(|v| v.file_name.clone()))
+            .filter_map(|&idx| {
+                self.videos.get(idx).map(|v| {
+                    let main_path = PathBuf::from(&v.file_path);
+                    let spanned_paths = crate::mlv::MlvClip::resolve_spanned_files(&main_path);
+                    let files = spanned_paths
+                        .into_iter()
+                        .map(|p| {
+                            let fname = p
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_else(|| v.file_name.clone());
+                            let fpath = p.to_string_lossy().to_string();
+                            (fname, fpath)
+                        })
+                        .collect();
+                    crate::ui::DeleteTargetClip {
+                        clip_name: v.file_name.clone(),
+                        files,
+                    }
+                })
+            })
             .collect();
-        self.delete_confirm_dialog.open(mode, indices, file_names);
+        self.delete_confirm_dialog.open(mode, indices, targets);
     }
 
     /// Execute removal of clips from catalog
@@ -345,20 +365,9 @@ impl MlvExplorerApp {
             if let Some(vid) = self.videos.get(idx) {
                 video_ids.push(vid.id);
                 let main_path = PathBuf::from(&vid.file_path);
-                if main_path.exists() {
-                    all_files_to_trash.push(main_path.clone());
-                }
-
-                // Check for companion spanned chunks (.M00, .M01, etc.)
-                for chunk_num in 0..100 {
-                    let p_upper = main_path.with_extension(format!("M{:02}", chunk_num));
-                    let p_lower = main_path.with_extension(format!("m{:02}", chunk_num));
-                    if p_upper.exists() {
-                        all_files_to_trash.push(p_upper);
-                    } else if p_lower.exists() {
-                        all_files_to_trash.push(p_lower);
-                    } else {
-                        break;
+                for chunk_path in crate::mlv::MlvClip::resolve_spanned_files(&main_path) {
+                    if chunk_path.exists() && !all_files_to_trash.contains(&chunk_path) {
+                        all_files_to_trash.push(chunk_path);
                     }
                 }
             }
@@ -1043,8 +1052,12 @@ impl eframe::App for MlvExplorerApp {
                 .default_width(220.0)
                 .width_range(180.0..=320.0)
                 .show(ctx, |ui| {
-                    if Navigator::show(ui, &mut self.filter, &self.facets) {
+                    let mut open_kw_mgr = false;
+                    if Navigator::show(ui, &mut self.filter, &self.facets, &self.db, &mut open_kw_mgr) {
                         self.reload_catalog();
+                    }
+                    if open_kw_mgr {
+                        self.keyword_dialog.open();
                     }
                 });
         }
@@ -1127,6 +1140,9 @@ impl eframe::App for MlvExplorerApp {
                             crate::ui::inspector::InspectorAction::CreateKeywordWithParent { name, parent_id } => {
                                 let _ = self.db.create_tag(&name, parent_id);
                                 self.refresh_facets();
+                            }
+                            crate::ui::inspector::InspectorAction::OpenKeywordManager => {
+                                self.keyword_dialog.open();
                             }
                             crate::ui::inspector::InspectorAction::FilterByTag(tag) => {
                                 self.filter.tag = if self.filter.tag.as_ref() == Some(&tag) {

@@ -8,11 +8,19 @@ pub enum DeleteMode {
     MoveToTrash,
 }
 
+#[derive(Clone, Debug)]
+pub struct DeleteTargetClip {
+    pub clip_name: String,
+    /// All files belonging to this clip (main `.MLV` + any spanned `.M00`/`.M01` files).
+    /// Each entry is `(file_name, full_path)`.
+    pub files: Vec<(String, String)>,
+}
+
 pub struct DeleteConfirmDialog {
     pub is_open: bool,
     pub mode: DeleteMode,
     pub target_indices: Vec<usize>,
-    pub file_names: Vec<String>,
+    pub targets: Vec<DeleteTargetClip>,
 }
 
 impl Default for DeleteConfirmDialog {
@@ -21,7 +29,7 @@ impl Default for DeleteConfirmDialog {
             is_open: false,
             mode: DeleteMode::RemoveFromCatalog,
             target_indices: Vec::new(),
-            file_names: Vec::new(),
+            targets: Vec::new(),
         }
     }
 }
@@ -35,10 +43,10 @@ pub enum DeleteConfirmResult {
 }
 
 impl DeleteConfirmDialog {
-    pub fn open(&mut self, mode: DeleteMode, indices: Vec<usize>, file_names: Vec<String>) {
+    pub fn open(&mut self, mode: DeleteMode, indices: Vec<usize>, targets: Vec<DeleteTargetClip>) {
         self.mode = mode;
         self.target_indices = indices;
-        self.file_names = file_names;
+        self.targets = targets;
         self.is_open = true;
     }
 
@@ -78,7 +86,7 @@ impl DeleteConfirmDialog {
             .collapsible(false)
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(ctx.screen_rect().center())
-            .fixed_size([460.0, 220.0])
+            .fixed_size([540.0, 290.0])
             .show(ctx, |ui| {
                 match self.mode {
                     DeleteMode::RemoveFromCatalog => {
@@ -101,11 +109,18 @@ impl DeleteConfirmDialog {
                         );
                     }
                     DeleteMode::MoveToTrash => {
+                        let total_files: usize = self.targets.iter().map(|t| t.files.len().max(1)).sum();
+                        let file_note = if total_files > count {
+                            format!(" ({} total spanned files on disk)", total_files)
+                        } else {
+                            String::new()
+                        };
                         ui.label(
                             RichText::new(format!(
-                                "Are you sure you want to move {} clip{} to the Trash / Recycle Bin?",
+                                "Are you sure you want to move {} clip{}{} to the Trash / Recycle Bin?",
                                 count,
-                                if count == 1 { "" } else { "s" }
+                                if count == 1 { "" } else { "s" },
+                                file_note
                             ))
                             .strong()
                             .color(FLAG_REJECTED)
@@ -125,15 +140,62 @@ impl DeleteConfirmDialog {
                 ui.separator();
                 ui.add_space(6.0);
 
-                // Preview clip names (up to 4)
-                ui.label(RichText::new("Target clips:").size(FONT_CAPTION).color(text_muted(ui)));
-                egui::ScrollArea::vertical().max_height(60.0).show(ui, |ui| {
-                    for name in self.file_names.iter().take(6) {
-                        ui.label(RichText::new(format!("  • {}", name)).size(FONT_SMALL).monospace().color(text_primary(ui)));
+                // Preview clip names + spanned files + full paths below each name
+                ui.label(RichText::new("Target clips & files:").size(FONT_CAPTION).color(text_muted(ui)));
+                ui.add_space(2.0);
+                egui::ScrollArea::vertical().max_height(135.0).show(ui, |ui| {
+                    for target in self.targets.iter().take(6) {
+                        if target.files.len() > 1 {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                ui.label(
+                                    RichText::new(format!("  • {}", target.clip_name))
+                                        .size(FONT_SMALL)
+                                        .strong()
+                                        .monospace()
+                                        .color(text_primary(ui)),
+                                );
+                                ui.label(
+                                    RichText::new(format!("(Card Spanned: {} files)", target.files.len()))
+                                        .size(FONT_CAPTION)
+                                        .strong()
+                                        .color(WARNING),
+                                );
+                            });
+                            for (i, (fname, fpath)) in target.files.iter().enumerate() {
+                                ui.label(
+                                    RichText::new(format!("      {}. {}", i + 1, fname))
+                                        .size(FONT_SMALL)
+                                        .monospace()
+                                        .color(text_secondary(ui)),
+                                );
+                                ui.label(
+                                    RichText::new(format!("         {}", fpath))
+                                        .size(FONT_CAPTION)
+                                        .monospace()
+                                        .color(text_muted(ui)),
+                                );
+                            }
+                        } else if let Some((fname, fpath)) = target.files.first() {
+                            ui.label(
+                                RichText::new(format!("  • {}", fname))
+                                    .size(FONT_SMALL)
+                                    .strong()
+                                    .monospace()
+                                    .color(text_primary(ui)),
+                            );
+                            ui.label(
+                                RichText::new(format!("      {}", fpath))
+                                    .size(FONT_CAPTION)
+                                    .monospace()
+                                    .color(text_muted(ui)),
+                            );
+                        }
+                        ui.add_space(5.0);
                     }
-                    if self.file_names.len() > 6 {
+                    if self.targets.len() > 6 {
                         ui.label(
-                            RichText::new(format!("    … and {} more", self.file_names.len() - 6))
+                            RichText::new(format!("    … and {} more", self.targets.len() - 6))
                                 .size(FONT_CAPTION)
                                 .color(text_muted(ui))
                         );

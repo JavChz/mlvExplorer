@@ -58,10 +58,29 @@ pub struct MlvClip {
 }
 
 impl MlvClip {
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, String> {
-        let main = path.as_ref().to_path_buf();
+    /// Reads the 64-bit `fileGuid` from the initial `MLVI` block of a chunk file.
+    pub fn read_file_guid(path: &Path) -> Option<u64> {
+        let mut f = File::open(path).ok()?;
+        let mut hdr = [0u8; 24];
+        f.read_exact(&mut hdr).ok()?;
+        if &hdr[0..4] != b"MLVI" {
+            return None;
+        }
+        Some(u64::from_le_bytes([
+            hdr[16], hdr[17], hdr[18], hdr[19], hdr[20], hdr[21], hdr[22], hdr[23],
+        ]))
+    }
+
+    /// Discovers all files belonging to a clip (the primary `.MLV` file plus any spanned
+    /// `.M00`, `.M01`, ... companion files in the same folder or sibling card folders).
+    pub fn resolve_spanned_files(path: &Path) -> Vec<PathBuf> {
+        let main = path.to_path_buf();
         let parent = main.parent().map(|p| p.to_path_buf());
-        let stem = main.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let stem = main
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let main_guid = Self::read_file_guid(&main);
 
         let mut chunks = vec![main.clone()];
 
@@ -69,37 +88,69 @@ impl MlvClip {
         for i in 0..100 {
             let p_upper = main.with_extension(format!("M{:02}", i));
             let p_lower = main.with_extension(format!("m{:02}", i));
-            if p_upper.exists() {
+            if p_upper.exists() && !chunks.contains(&p_upper) {
                 chunks.push(p_upper);
-            } else if p_lower.exists() {
+            } else if p_lower.exists() && !chunks.contains(&p_lower) {
                 chunks.push(p_lower);
             } else {
                 break;
             }
         }
 
-        // 2. Discover companion files from dual card spanning in the same folder or parent folder
-        // (e.g. When user dumps CF card and SD card into the same folder or parent directory structure)
-        if let Some(ref dir) = parent {
+        // Helper to scan a directory for matching-stem companion chunks
+        let scan_dir_for_companions = |dir: &Path, chunks: &mut Vec<PathBuf>| {
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.filter_map(|e| e.ok()) {
                     let ep = entry.path();
                     if ep.is_file() && !chunks.contains(&ep) {
                         let is_mlv_ext = ep.extension().map_or(false, |ext| {
                             let e = ext.to_string_lossy().to_uppercase();
-                            e == "MLV" || (e.starts_with('M') && e.len() == 3 && e[1..].chars().all(|c| c.is_ascii_digit()))
+                            e == "MLV"
+                                || (e.starts_with('M')
+                                    && e.len() == 3
+                                    && e[1..].chars().all(|c| c.is_ascii_digit()))
                         });
                         if is_mlv_ext {
-                            let ep_stem = ep.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-                            // If base file stem matches or matches common dual-card naming prefixes
+                            let ep_stem = ep
+                                .file_stem()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or_default();
                             if ep_stem.eq_ignore_ascii_case(&stem) {
+                                // If we have a main GUID, verify the companion matches
+                                if let (Some(mg), Some(cg)) = (main_guid, Self::read_file_guid(&ep)) {
+                                    if mg != cg {
+                                        continue;
+                                    }
+                                }
                                 chunks.push(ep);
                             }
                         }
                     }
                 }
             }
+        };
+
+        // 2. Discover companion files in the same folder or sibling card folders (e.g. CF/ and SD/)
+        if let Some(ref dir) = parent {
+            scan_dir_for_companions(dir, &mut chunks);
+            if let Some(grandparent) = dir.parent() {
+                if let Ok(sib_entries) = std::fs::read_dir(grandparent) {
+                    for sib in sib_entries.filter_map(|e| e.ok()) {
+                        let sp = sib.path();
+                        if sp.is_dir() && sp != *dir {
+                            scan_dir_for_companions(&sp, &mut chunks);
+                        }
+                    }
+                }
+            }
         }
+
+        chunks
+    }
+
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, String> {
+        let main = path.as_ref().to_path_buf();
+        let chunks = Self::resolve_spanned_files(&main);
 
         let mut meta = MlvMetadata {
             file_path: main.to_string_lossy().to_string(),

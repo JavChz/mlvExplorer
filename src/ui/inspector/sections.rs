@@ -2,7 +2,7 @@ use super::types::InspectorAction;
 use crate::db::{Database, VideoRecord};
 use crate::ui::theme::*;
 use crate::ui::widgets::{self, icon};
-use egui::{RichText, Sense, Stroke, Ui, Vec2};
+use egui::{Rect, RichText, Rounding, Sense, Stroke, Ui, Vec2};
 
 /// Clip identity block + rating & flag (always visible at the top of the inspector).
 pub struct OrganizationSection;
@@ -163,14 +163,16 @@ impl TagsSection {
                 ui.add_space(8.0);
             }
 
-            // 2. Add new keyword with optional Parent selector (Hierarchy)
-            let all_tag_records = db.get_all_tags().unwrap_or_default();
+            // 2. Add new keyword with optional Parent selector (Hierarchy) + Open Keyword Manager
+            let flat_options = crate::db::flatten_tree_with_connectors(&facets.full_tag_tree);
             ui.horizontal(|ui| {
-                let add_w = CONTROL_HEIGHT + 2.0;
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let btn_space = (CONTROL_HEIGHT + 2.0) * 2.0 + 4.0;
+                let edit_w = (ui.available_width() - btn_space).max(60.0);
                 let resp = ui.add_sized(
-                    [ui.available_width() - add_w - ui.spacing().item_spacing.x, CONTROL_HEIGHT],
+                    [edit_w, CONTROL_HEIGHT],
                     egui::TextEdit::singleline(&mut inspector.new_tag_input)
-                        .hint_text(widgets::hint("New keyword…"))
+                        .hint_text(widgets::hint("New keyword… [Enter]"))
                         .margin(egui::vec2(6.0, 3.0)),
                 );
 
@@ -183,10 +185,14 @@ impl TagsSection {
 
                 let can_add = !inspector.new_tag_input.trim().is_empty();
                 ui.add_enabled_ui(can_add, |ui| {
-                    if widgets::icon_button(ui, icon::PLUS, false, "Create keyword [Enter]").clicked() {
+                    if widgets::icon_button(ui, icon::PLUS, false, "Create & assign keyword [Enter]").clicked() {
                         commit = true;
                     }
                 });
+
+                if widgets::icon_button(ui, icon::TREE_STRUCTURE, false, "Open Keyword Taxonomy Manager…").clicked() {
+                    action = Some(InspectorAction::OpenKeywordManager);
+                }
 
                 if commit && !inspector.new_tag_input.trim().is_empty() {
                     let tag_name = inspector.new_tag_input.trim().to_string();
@@ -195,45 +201,45 @@ impl TagsSection {
                     if !vid.tags.contains(&tag_name) {
                         vid.tags.push(tag_name.clone());
                         let _ = db.add_tag(vid.id, &tag_name);
-                        action = Some(InspectorAction::BatchAddTag(tag_name.clone()));
                     }
+                    action = Some(InspectorAction::BatchAddTag(tag_name.clone()));
                     inspector.new_tag_input.clear();
                     inspector.new_tag_parent_id = None;
                 }
             });
 
-            // Parent keyword dropdown selector for new keyword
-            if !all_tag_records.is_empty() {
+            // Parent keyword dropdown selector for new keyword (hierarchical with tree connector lines)
+            if !flat_options.is_empty() {
                 ui.add_space(2.0);
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Parent:").size(FONT_CAPTION).color(text_muted(ui)));
                     let current_parent_name = inspector
                         .new_tag_parent_id
-                        .and_then(|pid| all_tag_records.iter().find(|t| t.id == pid).map(|t| t.name.as_str()))
+                        .and_then(|pid| flat_options.iter().find(|t| t.id == pid).map(|t| t.name.as_str()))
                         .unwrap_or("None (Top Level)");
 
                     egui::ComboBox::from_id_salt("inspector_keyword_parent_select")
                         .selected_text(RichText::new(current_parent_name).size(FONT_CAPTION))
-                        .width(ui.available_width() - 8.0)
+                        .width((ui.available_width() - 4.0).max(80.0))
                         .show_ui(ui, |ui| {
                             if ui.selectable_label(inspector.new_tag_parent_id.is_none(), "None (Top Level)").clicked() {
                                 inspector.new_tag_parent_id = None;
                             }
-                            for tag_rec in &all_tag_records {
-                                let is_active = inspector.new_tag_parent_id == Some(tag_rec.id);
-                                if ui.selectable_label(is_active, &tag_rec.name).clicked() {
-                                    inspector.new_tag_parent_id = Some(tag_rec.id);
+                            for opt in &flat_options {
+                                let is_active = inspector.new_tag_parent_id == Some(opt.id);
+                                if ui.selectable_label(is_active, &opt.display_label).clicked() {
+                                    inspector.new_tag_parent_id = Some(opt.id);
                                 }
                             }
                         });
                 });
             }
 
-            ui.add_space(8.0);
+            ui.add_space(6.0);
             widgets::toolbar_divider(ui);
             ui.add_space(4.0);
 
-            // 3. Complete Keyword List with Checkboxes (Apply to clip) and Filter Arrow
+            // 3. Complete Keyword List with Checkboxes, Inline Child Creator (+), Count Badges, and Filter Arrow
             ui.label(RichText::new("ALL KEYWORDS (Check to assign)").size(FONT_CAPTION).color(text_muted(ui)).strong());
             ui.add_space(2.0);
 
@@ -252,11 +258,11 @@ impl TagsSection {
         action
     }
 
-    /// Renders a hierarchical keyword item inside the Inspector with:
-    /// - Indentation based on tree depth
-    /// - Checkbox toggle (adds / removes keyword on active selection)
-    /// - Keyword name label
-    /// - Right-side arrow button (quickly filter catalog by this keyword)
+    /// Renders a hierarchical keyword item inside the Inspector matching the left Navigator's studio row design:
+    /// - Indentation + expand/collapse caret
+    /// - Checkbox to assign/unassign keyword on the selected clip(s)
+    /// - Tag icon + Keyword name
+    /// - Right-aligned count badge pill, `+` button to add a child keyword inline, and `→` filter arrow
     fn render_inspector_keyword_node(
         ui: &mut Ui,
         node: &crate::db::TagNode,
@@ -267,81 +273,279 @@ impl TagsSection {
         let mut action = None;
         let id = ui.make_persistent_id(format!("insp_kw_{}", node.id));
         let mut is_expanded = ui.data_mut(|d| d.get_temp::<bool>(id).unwrap_or(true));
+        let is_dark = ui.visuals().dark_mode;
+
+        let add_child_target_id = ui.make_persistent_id("insp_add_child_target_id");
+        let add_child_text_id = ui.make_persistent_id("insp_add_child_text");
+        let add_child_focus_id = ui.make_persistent_id("insp_add_child_focus");
+
+        let mut active_child_parent = ui.data_mut(|d| d.get_temp::<Option<i64>>(add_child_target_id).unwrap_or(None));
+        let is_adding_child_here = active_child_parent == Some(node.id);
 
         let has_children = !node.children.is_empty();
         let indent = depth as f32 * 14.0;
-        let mut is_checked = vid.tags.contains(&node.name);
+        let is_checked = vid.tags.contains(&node.name);
 
-        ui.push_id(id, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                if indent > 0.0 {
-                    ui.add_space(indent);
-                }
+        let row_height = 24.0;
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), Sense::click());
+        let center_y = rect.center().y;
 
-                // Expand / Collapse Caret
-                if has_children {
-                    let caret = if is_expanded { icon::CARET_DOWN } else { icon::CARET_RIGHT };
-                    if ui.add(egui::Label::new(RichText::new(caret).size(11.0).color(text_muted(ui))).sense(Sense::click())).clicked() {
-                        is_expanded = !is_expanded;
-                        ui.data_mut(|d| d.insert_temp(id, is_expanded));
-                    }
+        // Right-side interactive buttons: Filter Arrow + Add Child (+)
+        let arrow_size = 18.0;
+        let arrow_rect = Rect::from_center_size(
+            egui::Pos2::new(rect.max.x - arrow_size * 0.5 - 4.0, center_y),
+            Vec2::new(arrow_size, arrow_size),
+        );
+        let arrow_resp = ui
+            .interact(arrow_rect, id.with("arrow_filter"), Sense::click())
+            .on_hover_text(format!("Filter catalog by keyword '{}'", node.name));
+        let arrow_hovered = arrow_resp.hovered();
+
+        let plus_rect = Rect::from_center_size(
+            egui::Pos2::new(arrow_rect.min.x - arrow_size * 0.5 - 2.0, center_y),
+            Vec2::new(arrow_size, arrow_size),
+        );
+        let plus_resp = ui
+            .interact(plus_rect, id.with("plus_child"), Sense::click())
+            .on_hover_text(format!("Add child keyword under '{}'", node.name));
+        let plus_hovered = plus_resp.hovered();
+
+        // Left-side caret interaction
+        let mut cur_x = rect.min.x + 4.0 + indent;
+        let caret_rect = Rect::from_center_size(egui::Pos2::new(cur_x + 6.0, center_y), Vec2::new(14.0, 14.0));
+        let caret_resp = if has_children {
+            Some(ui.interact(caret_rect, id.with("caret"), Sense::click()))
+        } else {
+            None
+        };
+        let caret_clicked = caret_resp.as_ref().map_or(false, |r| r.clicked());
+        let caret_hovered = caret_resp.as_ref().map_or(false, |r| r.hovered());
+
+        if caret_clicked {
+            is_expanded = !is_expanded;
+            ui.data_mut(|d| d.insert_temp(id, is_expanded));
+        }
+
+        let row_or_btn_hovered = response.hovered() || arrow_hovered || plus_hovered || is_adding_child_here;
+        if row_or_btn_hovered {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+
+        let painter = ui.painter();
+
+        // Row background
+        if is_checked {
+            let bg_sel = if is_dark {
+                ACCENT_DIM.gamma_multiply(0.55)
+            } else {
+                ACCENT.gamma_multiply(0.18)
+            };
+            painter.rect_filled(rect, Rounding::same(ROUNDING), bg_sel);
+            if row_or_btn_hovered {
+                painter.rect_stroke(rect, Rounding::same(ROUNDING), Stroke::new(1.0_f32, ACCENT));
+            }
+        } else if row_or_btn_hovered {
+            painter.rect_filled(rect, Rounding::same(ROUNDING), bg_card_hover(ui));
+        }
+
+        // 1. Caret or dot
+        if has_children {
+            let caret_glyph = if is_expanded { icon::CARET_DOWN } else { icon::CARET_RIGHT };
+            painter.text(
+                caret_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                caret_glyph,
+                egui::FontId::proportional(11.0),
+                if caret_hovered { text_primary(ui) } else { text_muted(ui) },
+            );
+        } else {
+            painter.circle_filled(egui::Pos2::new(cur_x + 6.0, center_y), 1.5, text_muted(ui));
+        }
+        cur_x += 16.0;
+
+        // 2. Studio Checkbox
+        let cb_size = 14.0;
+        let cb_rect = Rect::from_center_size(egui::Pos2::new(cur_x + cb_size * 0.5, center_y), Vec2::new(cb_size, cb_size));
+        if is_checked {
+            painter.rect_filled(cb_rect, Rounding::same(3.0), ACCENT);
+            painter.text(
+                cb_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                icon::CHECK,
+                egui::FontId::proportional(10.0),
+                egui::Color32::WHITE,
+            );
+        } else {
+            painter.rect_filled(cb_rect, Rounding::same(3.0), bg_field(ui));
+            painter.rect_stroke(
+                cb_rect,
+                Rounding::same(3.0),
+                Stroke::new(1.0_f32, if response.hovered() { ACCENT } else { border_strong(ui) }),
+            );
+        }
+        cur_x += cb_size + 6.0;
+
+        // 3. Tag Icon
+        painter.text(
+            egui::Pos2::new(cur_x, center_y),
+            egui::Align2::LEFT_CENTER,
+            icon::TAG,
+            egui::FontId::proportional(12.0),
+            if is_checked { ACCENT_HOVER } else { ACCENT },
+        );
+        cur_x += 15.0;
+
+        // 4. Right Count Badge Pill
+        let count_str = format!("{}", node.total_count);
+        let badge_w = (count_str.len() as f32 * 6.5 + 10.0).max(18.0);
+        let badge_right_anchor = if row_or_btn_hovered { plus_rect.min.x - 2.0 } else { arrow_rect.min.x - 4.0 };
+        let badge_rect = Rect::from_center_size(
+            egui::Pos2::new(badge_right_anchor - badge_w * 0.5, center_y),
+            Vec2::new(badge_w, 15.0),
+        );
+        let badge_bg = if is_checked {
+            if is_dark { ACCENT.gamma_multiply(0.35) } else { ACCENT.gamma_multiply(0.2) }
+        } else {
+            bg_field(ui)
+        };
+        painter.rect_filled(badge_rect, Rounding::same(8.0), badge_bg);
+        painter.text(
+            badge_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            &count_str,
+            egui::FontId::proportional(FONT_CAPTION),
+            if is_checked { text_primary(ui) } else { text_muted(ui) },
+        );
+
+        // 5. Plus button on hover (Add child keyword)
+        if row_or_btn_hovered {
+            let plus_bg = if plus_hovered || is_adding_child_here { ACCENT } else { egui::Color32::TRANSPARENT };
+            painter.rect_filled(plus_rect, Rounding::same(3.0), plus_bg);
+            painter.text(
+                plus_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                icon::PLUS,
+                egui::FontId::proportional(11.0),
+                if plus_hovered || is_adding_child_here {
+                    egui::Color32::WHITE
                 } else {
-                    ui.add_space(10.0);
-                }
+                    text_secondary(ui)
+                },
+            );
+        }
 
-                // Checkbox to toggle keyword on active clip
-                let mut toggle_to = None;
-                let cb_resp = ui.checkbox(&mut is_checked, "");
-                if cb_resp.clicked() {
-                    toggle_to = Some(is_checked);
-                }
+        // 6. Filter Arrow button on right
+        if row_or_btn_hovered {
+            let arrow_bg = if arrow_hovered { ACCENT } else { egui::Color32::TRANSPARENT };
+            painter.rect_filled(arrow_rect, Rounding::same(3.0), arrow_bg);
+            painter.text(
+                arrow_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                icon::ARROW_RIGHT,
+                egui::FontId::proportional(12.0),
+                if arrow_hovered { egui::Color32::WHITE } else { text_secondary(ui) },
+            );
+        }
 
-                // Keyword name label
-                let text_color = if is_checked { text_primary(ui) } else { text_secondary(ui) };
-                let lbl_resp = ui.add(
-                    egui::Label::new(RichText::new(&node.name).size(FONT_BODY).color(text_color))
-                        .sense(Sense::click()),
+        // 7. Keyword Name Label
+        let max_label_w = (badge_rect.min.x - cur_x - 6.0).max(10.0);
+        let font_id = egui::FontId::proportional(FONT_BODY);
+        let elided = widgets::elide(ui, &node.name, &font_id, max_label_w);
+        painter.text(
+            egui::Pos2::new(cur_x, center_y),
+            egui::Align2::LEFT_CENTER,
+            elided,
+            font_id,
+            if is_checked { text_primary(ui) } else { text_secondary(ui) },
+        );
+
+        // Handle clicks: Plus -> inline child input; Arrow -> filter catalog; Row -> toggle checkbox
+        if plus_resp.clicked() {
+            if is_adding_child_here {
+                active_child_parent = None;
+            } else {
+                active_child_parent = Some(node.id);
+                ui.data_mut(|d| {
+                    d.insert_temp(add_child_text_id, String::new());
+                    d.insert_temp(add_child_focus_id, true);
+                });
+            }
+            ui.data_mut(|d| d.insert_temp(add_child_target_id, active_child_parent));
+        } else if arrow_resp.clicked() {
+            action = Some(InspectorAction::FilterByTag(node.name.clone()));
+        } else if response.clicked() && !caret_clicked {
+            if !is_checked {
+                if !vid.tags.contains(&node.name) {
+                    vid.tags.push(node.name.clone());
+                    let _ = db.add_tag(vid.id, &node.name);
+                    action = Some(InspectorAction::BatchAddTag(node.name.clone()));
+                }
+            } else {
+                vid.tags.retain(|t| t != &node.name);
+                let _ = db.remove_tag(vid.id, &node.name);
+                action = Some(InspectorAction::BatchRemoveTag(node.name.clone()));
+            }
+        }
+
+        // Inline Add Child input row directly below this keyword node
+        if active_child_parent == Some(node.id) {
+            let mut child_text = ui.data_mut(|d| d.get_temp::<String>(add_child_text_id).unwrap_or_default());
+            let mut should_focus = ui.data_mut(|d| d.get_temp::<bool>(add_child_focus_id).unwrap_or(false));
+
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                ui.add_space(indent + 16.0);
+                ui.label(RichText::new("└").size(FONT_SMALL).color(ACCENT));
+
+                let btn_space = (CONTROL_HEIGHT + 2.0) * 2.0 + 4.0;
+                let edit_w = (ui.available_width() - btn_space).max(50.0);
+                let edit_resp = ui.add_sized(
+                    [edit_w, CONTROL_HEIGHT],
+                    egui::TextEdit::singleline(&mut child_text)
+                        .hint_text(widgets::hint(&format!("Child of {}…", node.name)))
+                        .margin(egui::vec2(5.0, 2.0)),
                 );
-                if lbl_resp.hovered() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                }
-                if lbl_resp.clicked() && toggle_to.is_none() {
-                    toggle_to = Some(!is_checked);
+                if should_focus {
+                    edit_resp.request_focus();
+                    should_focus = false;
                 }
 
-                if let Some(should_check) = toggle_to {
-                    if should_check {
-                        if !vid.tags.contains(&node.name) {
-                            vid.tags.push(node.name.clone());
-                            let _ = db.add_tag(vid.id, &node.name);
-                            action = Some(InspectorAction::BatchAddTag(node.name.clone()));
-                        }
-                    } else {
-                        vid.tags.retain(|t| t != &node.name);
-                        let _ = db.remove_tag(vid.id, &node.name);
-                        action = Some(InspectorAction::BatchRemoveTag(node.name.clone()));
-                    }
-                }
+                let enter_pressed = (edit_resp.lost_focus() || edit_resp.has_focus())
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
 
-                // Right-aligned Filter Arrow Button (Lightroom style filter arrow)
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let filter_btn = ui.add(
-                        egui::Button::new(RichText::new(icon::ARROW_RIGHT).size(12.0).color(text_muted(ui)))
-                            .fill(egui::Color32::TRANSPARENT)
-                            .stroke(Stroke::NONE),
-                    )
-                    .on_hover_text(format!("Filter catalog by keyword '{}'", node.name));
+                let can_save = !child_text.trim().is_empty();
+                let mut commit_child = enter_pressed && can_save;
 
-                    if filter_btn.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
-                    if filter_btn.clicked() {
-                        action = Some(InspectorAction::FilterByTag(node.name.clone()));
+                ui.add_enabled_ui(can_save, |ui| {
+                    if widgets::icon_button(ui, icon::CHECK, true, "Create & assign child keyword [Enter]").clicked() {
+                        commit_child = true;
                     }
                 });
+                if esc_pressed || widgets::icon_button(ui, icon::X, false, "Cancel [Esc]").clicked() {
+                    active_child_parent = None;
+                    child_text.clear();
+                } else if commit_child {
+                    let clean = child_text.trim().to_string();
+                    let _ = db.create_tag(&clean, Some(node.id));
+                    if !vid.tags.contains(&clean) {
+                        vid.tags.push(clean.clone());
+                        let _ = db.add_tag(vid.id, &clean);
+                    }
+                    action = Some(InspectorAction::BatchAddTag(clean));
+                    child_text.clear();
+                    active_child_parent = None;
+                    is_expanded = true;
+                    ui.data_mut(|d| d.insert_temp(id, true));
+                }
             });
-        });
+
+            ui.data_mut(|d| {
+                d.insert_temp(add_child_target_id, active_child_parent);
+                d.insert_temp(add_child_text_id, child_text);
+                d.insert_temp(add_child_focus_id, should_focus);
+            });
+        }
 
         // Recursively render child keywords if expanded
         if has_children && is_expanded {

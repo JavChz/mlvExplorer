@@ -10,6 +10,8 @@ impl Navigator {
         ui: &mut Ui,
         filter: &mut FilterCriteria,
         facets: &Facets,
+        db: &crate::db::Database,
+        open_keyword_manager: &mut bool,
     ) -> bool {
         let mut changed = false;
 
@@ -105,13 +107,88 @@ impl Navigator {
                 let total_tags_count = facets.tags.len();
                 let trailing_tags = (total_tags_count > 0).then(|| RichText::new(total_tags_count.to_string()).size(FONT_CAPTION).color(text_muted(ui)).into());
                 widgets::section(ui, "Keywords", true, trailing_tags, |ui| {
+                    // Quick Add Keyword directly from the left Navigator sidebar
+                    let kw_input_id = ui.make_persistent_id("nav_new_kw_input");
+                    let kw_parent_id = ui.make_persistent_id("nav_new_kw_parent");
+                    let mut new_kw_text = ui.data_mut(|d| d.get_temp::<String>(kw_input_id).unwrap_or_default());
+                    let mut new_kw_parent = ui.data_mut(|d| d.get_temp::<Option<i64>>(kw_parent_id).unwrap_or(None));
+
+                    let flat_options = crate::db::flatten_tree_with_connectors(&facets.full_tag_tree);
+
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        let btn_space = (CONTROL_HEIGHT + 2.0) * 2.0 + 4.0;
+                        let edit_w = (ui.available_width() - btn_space).max(60.0);
+                        let resp = ui.add_sized(
+                            [edit_w, CONTROL_HEIGHT],
+                            egui::TextEdit::singleline(&mut new_kw_text)
+                                .hint_text(widgets::hint("New keyword… [Enter]"))
+                                .margin(egui::vec2(6.0, 3.0)),
+                        );
+
+                        let is_enter = (resp.lost_focus() || resp.has_focus())
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        let can_add = !new_kw_text.trim().is_empty();
+                        let mut commit = is_enter && can_add;
+
+                        ui.add_enabled_ui(can_add, |ui| {
+                            if widgets::icon_button(ui, icon::PLUS, false, "Create keyword [Enter]").clicked() {
+                                commit = true;
+                            }
+                        });
+
+                        if widgets::icon_button(ui, icon::TREE_STRUCTURE, false, "Open Keyword Taxonomy Manager…").clicked() {
+                            *open_keyword_manager = true;
+                        }
+
+                        if commit {
+                            let clean_name = new_kw_text.trim().to_string();
+                            let _ = db.create_tag(&clean_name, new_kw_parent);
+                            new_kw_text.clear();
+                            changed = true;
+                            if is_enter {
+                                resp.request_focus();
+                            }
+                        }
+                    });
+
+                    if !flat_options.is_empty() {
+                        ui.add_space(2.0);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Parent:").size(FONT_CAPTION).color(text_muted(ui)));
+                            let current_parent_name = new_kw_parent
+                                .and_then(|pid| flat_options.iter().find(|t| t.id == pid).map(|t| t.name.as_str()))
+                                .unwrap_or("None (Top Level)");
+
+                            egui::ComboBox::from_id_salt("navigator_keyword_parent_select")
+                                .selected_text(RichText::new(current_parent_name).size(FONT_CAPTION))
+                                .width((ui.available_width() - 4.0).max(80.0))
+                                .show_ui(ui, |ui| {
+                                    if ui.selectable_label(new_kw_parent.is_none(), "None (Top Level)").clicked() {
+                                        new_kw_parent = None;
+                                    }
+                                    for opt in &flat_options {
+                                        let is_active = new_kw_parent == Some(opt.id);
+                                        if ui.selectable_label(is_active, &opt.display_label).clicked() {
+                                            new_kw_parent = Some(opt.id);
+                                        }
+                                    }
+                                });
+                        });
+                    }
+
+                    ui.data_mut(|d| {
+                        d.insert_temp(kw_input_id, new_kw_text);
+                        d.insert_temp(kw_parent_id, new_kw_parent);
+                    });
+
+                    ui.add_space(4.0);
+
                     if facets.tag_tree.is_empty() {
                         ui.label(RichText::new("No keywords created").size(FONT_SMALL).color(text_hint(ui)));
                     } else {
                         for node in &facets.tag_tree {
-                            if Self::render_keyword_tree_node(ui, node, filter, 0, &mut changed) {
-                                // Handled inside helper
-                            }
+                            Self::render_keyword_tree_node(ui, node, filter, db, 0, &mut changed);
                         }
                     }
                 });
@@ -255,6 +332,7 @@ impl Navigator {
         ui: &mut Ui,
         node: &crate::db::TagNode,
         filter: &mut FilterCriteria,
+        db: &crate::db::Database,
         depth: usize,
         changed: &mut bool,
     ) -> bool {
@@ -264,10 +342,39 @@ impl Navigator {
         let mut is_expanded = ui.data_mut(|d| d.get_temp::<bool>(id).unwrap_or(true));
         let is_dark = ui.visuals().dark_mode;
 
+        let add_child_target_id = ui.make_persistent_id("nav_add_child_target_id");
+        let add_child_text_id = ui.make_persistent_id("nav_add_child_text");
+        let add_child_focus_id = ui.make_persistent_id("nav_add_child_focus");
+
+        let mut active_child_parent = ui.data_mut(|d| d.get_temp::<Option<i64>>(add_child_target_id).unwrap_or(None));
+        let is_adding_child_here = active_child_parent == Some(node.id);
+
         let indent = depth as f32 * 14.0;
         let row_height = 24.0;
         let sense = if is_disabled { Sense::hover() } else { Sense::click() };
         let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), sense);
+
+        // Right side: Plus (Add Child) button + Count badge + Filter Arrow button
+        let center_y = rect.center().y;
+        let arrow_size = 18.0;
+        let arrow_rect = Rect::from_center_size(
+            Pos2::new(rect.max.x - arrow_size * 0.5 - 4.0, center_y),
+            Vec2::new(arrow_size, arrow_size),
+        );
+        let arrow_resp = ui.interact(arrow_rect, id.with("arrow_filter"), sense);
+        let arrow_hovered = !is_disabled && arrow_resp.hovered();
+
+        let plus_rect = Rect::from_center_size(
+            Pos2::new(arrow_rect.min.x - arrow_size * 0.5 - 2.0, center_y),
+            Vec2::new(arrow_size, arrow_size),
+        );
+        let plus_resp = ui
+            .interact(plus_rect, id.with("plus_child"), Sense::click())
+            .on_hover_text(format!("Add child keyword under '{}'", node.name));
+        let plus_hovered = plus_resp.hovered();
+
+        let row_or_btn_hovered = response.hovered() || arrow_hovered || plus_hovered || is_adding_child_here;
+
         let painter = ui.painter();
 
         // Row background
@@ -275,11 +382,10 @@ impl Navigator {
             let bg_sel = if is_dark { ACCENT_DIM } else { ACCENT };
             painter.rect_filled(rect, Rounding::same(ROUNDING), bg_sel);
             painter.rect_stroke(rect, Rounding::same(ROUNDING), Stroke::new(1.0_f32, ACCENT));
-        } else if !is_disabled && response.hovered() {
+        } else if (!is_disabled && response.hovered()) || plus_hovered || is_adding_child_here {
             painter.rect_filled(rect, Rounding::same(ROUNDING), bg_card_hover(ui));
         }
 
-        let center_y = rect.center().y;
         let mut cur_x = rect.min.x + 4.0 + indent;
 
         // Caret toggle for children
@@ -335,20 +441,12 @@ impl Navigator {
         );
         cur_x += 16.0;
 
-        // Right side: Count badge + Filter Arrow button
-        let arrow_size = 18.0;
-        let arrow_rect = Rect::from_center_size(
-            Pos2::new(rect.max.x - arrow_size * 0.5 - 4.0, center_y),
-            Vec2::new(arrow_size, arrow_size),
-        );
-        let arrow_resp = ui.interact(arrow_rect, id.with("arrow_filter"), sense);
-        let arrow_hovered = !is_disabled && arrow_resp.hovered();
-
         // Right Count Badge Pill
         let count_str = format!("{}", node.total_count);
         let badge_w = (count_str.len() as f32 * 6.5 + 10.0).max(18.0);
+        let badge_right_anchor = if row_or_btn_hovered { plus_rect.min.x - 2.0 } else { arrow_rect.min.x - 4.0 };
         let badge_rect = Rect::from_center_size(
-            Pos2::new(arrow_rect.min.x - badge_w * 0.5 - 4.0, center_y),
+            Pos2::new(badge_right_anchor - badge_w * 0.5, center_y),
             Vec2::new(badge_w, 15.0),
         );
 
@@ -375,8 +473,25 @@ impl Navigator {
             badge_text_col,
         );
 
+        // Plus button on hover (Add child keyword)
+        if row_or_btn_hovered {
+            let plus_bg = if plus_hovered || is_adding_child_here { ACCENT } else { Color32::TRANSPARENT };
+            painter.rect_filled(plus_rect, Rounding::same(3.0), plus_bg);
+            painter.text(
+                plus_rect.center(),
+                Align2::CENTER_CENTER,
+                icon::PLUS,
+                FontId::proportional(11.0),
+                if plus_hovered || is_adding_child_here || is_sel {
+                    Color32::WHITE
+                } else {
+                    text_secondary(ui)
+                },
+            );
+        }
+
         // Arrow button on right (Lightroom style filter arrow)
-        if !is_disabled && (response.hovered() || is_sel || arrow_hovered) {
+        if !is_disabled && (row_or_btn_hovered || is_sel) {
             let arrow_bg = if arrow_hovered { ACCENT } else { Color32::TRANSPARENT };
             painter.rect_filled(arrow_rect, Rounding::same(3.0), arrow_bg);
             painter.text(
@@ -388,8 +503,18 @@ impl Navigator {
             );
         }
 
-        // Clicking the arrow or row sets/toggles filtering to this keyword
-        if !is_disabled && (arrow_resp.clicked() || response.clicked()) {
+        if plus_resp.clicked() {
+            if is_adding_child_here {
+                active_child_parent = None;
+            } else {
+                active_child_parent = Some(node.id);
+                ui.data_mut(|d| {
+                    d.insert_temp(add_child_text_id, String::new());
+                    d.insert_temp(add_child_focus_id, true);
+                });
+            }
+            ui.data_mut(|d| d.insert_temp(add_child_target_id, active_child_parent));
+        } else if !is_disabled && (arrow_resp.clicked() || response.clicked()) {
             filter.tag = if is_sel { None } else { Some(node.name.clone()) };
             *changed = true;
         }
@@ -413,10 +538,66 @@ impl Navigator {
             label_col,
         );
 
+        // Inline Add Child input row directly below this keyword node
+        if active_child_parent == Some(node.id) {
+            let mut child_text = ui.data_mut(|d| d.get_temp::<String>(add_child_text_id).unwrap_or_default());
+            let mut should_focus = ui.data_mut(|d| d.get_temp::<bool>(add_child_focus_id).unwrap_or(false));
+
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                ui.add_space(indent + 16.0);
+                ui.label(RichText::new("└").size(FONT_SMALL).color(ACCENT));
+
+                let btn_space = (CONTROL_HEIGHT + 2.0) * 2.0 + 4.0;
+                let edit_w = (ui.available_width() - btn_space).max(50.0);
+                let edit_resp = ui.add_sized(
+                    [edit_w, CONTROL_HEIGHT],
+                    egui::TextEdit::singleline(&mut child_text)
+                        .hint_text(widgets::hint(&format!("Child of {}…", node.name)))
+                        .margin(egui::vec2(5.0, 2.0)),
+                );
+                if should_focus {
+                    edit_resp.request_focus();
+                    should_focus = false;
+                }
+
+                let enter_pressed = (edit_resp.lost_focus() || edit_resp.has_focus())
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+
+                let can_save = !child_text.trim().is_empty();
+                let mut commit_child = enter_pressed && can_save;
+
+                ui.add_enabled_ui(can_save, |ui| {
+                    if widgets::icon_button(ui, icon::CHECK, true, "Create child keyword [Enter]").clicked() {
+                        commit_child = true;
+                    }
+                });
+                if esc_pressed || widgets::icon_button(ui, icon::X, false, "Cancel [Esc]").clicked() {
+                    active_child_parent = None;
+                    child_text.clear();
+                } else if commit_child {
+                    let clean = child_text.trim().to_string();
+                    let _ = db.create_tag(&clean, Some(node.id));
+                    child_text.clear();
+                    active_child_parent = None;
+                    is_expanded = true;
+                    ui.data_mut(|d| d.insert_temp(id, true));
+                    *changed = true;
+                }
+            });
+
+            ui.data_mut(|d| {
+                d.insert_temp(add_child_target_id, active_child_parent);
+                d.insert_temp(add_child_text_id, child_text);
+                d.insert_temp(add_child_focus_id, should_focus);
+            });
+        }
+
         // Recursively render children if expanded
         if has_children && is_expanded {
             for child in &node.children {
-                Self::render_keyword_tree_node(ui, child, filter, depth + 1, changed);
+                Self::render_keyword_tree_node(ui, child, filter, db, depth + 1, changed);
             }
         }
 

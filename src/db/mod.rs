@@ -443,5 +443,83 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&test_dir);
     }
+
+    #[test]
+    fn test_flatten_tree_with_connectors() {
+        let tree = vec![
+            TagNode {
+                id: 2,
+                name: "People".to_string(),
+                parent_id: None,
+                direct_count: 0,
+                total_count: 0,
+                children: vec![TagNode {
+                    id: 5,
+                    name: "Family".to_string(),
+                    parent_id: Some(2),
+                    direct_count: 0,
+                    total_count: 0,
+                    children: vec![],
+                }],
+            },
+            TagNode {
+                id: 1,
+                name: "Location".to_string(),
+                parent_id: None,
+                direct_count: 0,
+                total_count: 0,
+                children: vec![
+                    TagNode {
+                        id: 4,
+                        name: "USA".to_string(),
+                        parent_id: Some(1),
+                        direct_count: 0,
+                        total_count: 0,
+                        children: vec![],
+                    },
+                    TagNode {
+                        id: 3,
+                        name: "Europe".to_string(),
+                        parent_id: Some(1),
+                        direct_count: 0,
+                        total_count: 0,
+                        children: vec![
+                            TagNode {
+                                id: 7,
+                                name: "Spain".to_string(),
+                                parent_id: Some(3),
+                                direct_count: 0,
+                                total_count: 0,
+                                children: vec![],
+                            },
+                            TagNode {
+                                id: 6,
+                                name: "France".to_string(),
+                                parent_id: Some(3),
+                                direct_count: 0,
+                                total_count: 0,
+                                children: vec![],
+                            },
+                        ],
+                    },
+                ],
+            },
+        ];
+
+        let flat = flatten_tree_with_connectors(&tree);
+        let labels: Vec<&str> = flat.iter().map(|o| o.display_label.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "Location",
+                "├─ Europe",
+                "│   ├─ France",
+                "│   └─ Spain",
+                "└─ USA",
+                "People",
+                "└─ Family",
+            ]
+        );
+    }
 }
 

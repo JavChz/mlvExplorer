@@ -221,3 +221,70 @@ pub struct CatalogBackup {
     pub videos: Vec<VideoRecord>,
     pub tags: Vec<TagRecord>,
 }
+
+/// Flattened hierarchical tag entry with visual tree connectors (`├─ `, `└─ `, `│   `)
+/// for parent dropdown selectors, sorted alphabetically at each hierarchy level.
+#[derive(Debug, Clone)]
+pub struct FlatTagOption {
+    pub id: i64,
+    pub name: String,
+    pub display_label: String,
+    pub depth: usize,
+}
+
+pub fn flatten_tree_with_connectors(nodes: &[TagNode]) -> Vec<FlatTagOption> {
+    let mut out = Vec::new();
+    fn walk(
+        nodes: &[TagNode],
+        depth: usize,
+        ancestor_is_last: &mut Vec<bool>,
+        out: &mut Vec<FlatTagOption>,
+    ) {
+        let mut sorted: Vec<&TagNode> = nodes.iter().collect();
+        sorted.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+        let len = sorted.len();
+        for (i, node) in sorted.iter().enumerate() {
+            let is_last = i + 1 == len;
+            let display_label = if depth == 0 {
+                node.name.clone()
+            } else {
+                let mut prefix = String::new();
+                for &anc_last in ancestor_is_last.iter() {
+                    if anc_last {
+                        prefix.push_str("    ");
+                    } else {
+                        prefix.push_str("│   ");
+                    }
+                }
+                if is_last {
+                    prefix.push_str("└─ ");
+                } else {
+                    prefix.push_str("├─ ");
+                }
+                format!("{prefix}{}", node.name)
+            };
+
+            out.push(FlatTagOption {
+                id: node.id,
+                name: node.name.clone(),
+                display_label,
+                depth,
+            });
+
+            if !node.children.is_empty() {
+                if depth > 0 {
+                    ancestor_is_last.push(is_last);
+                }
+                walk(&node.children, depth + 1, ancestor_is_last, out);
+                if depth > 0 {
+                    ancestor_is_last.pop();
+                }
+            }
+        }
+    }
+    let mut anc = Vec::new();
+    walk(nodes, 0, &mut anc, &mut out);
+    out
+}
+
