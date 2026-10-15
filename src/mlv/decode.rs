@@ -45,9 +45,10 @@ impl FrameSource {
         let audio_meta = self.clip.meta.audio.clone().unwrap_or_default();
         let total_bytes: usize = self.clip.audio_frames.iter().map(|af| af.size as usize).sum();
         let mut samples = Vec::with_capacity(total_bytes / 2);
+        let mut raw = Vec::new();
 
         for af in &self.clip.audio_frames {
-            let mut raw = vec![0u8; af.size as usize];
+            raw.resize(af.size as usize, 0);
             if self.read_at(af.chunk as usize, af.offset, &mut raw).is_ok() {
                 let sample_count = raw.len() / 2;
                 for i in 0..sample_count {

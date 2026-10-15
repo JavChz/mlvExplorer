@@ -18,7 +18,7 @@ impl FullscreenOverlay {
         view: &mut PlayerView,
         ui: &mut Ui,
         video: &VideoRecord,
-        playback: &Playback,
+        playback: Option<&Playback>,
         total_frames: usize,
         alpha: f32,
     ) -> Option<PlayerAction> {
@@ -84,7 +84,7 @@ impl FullscreenOverlay {
             .inner_margin(Margin::symmetric(14.0, 8.0))
             .show(&mut overlay_ui, |ui| {
                 // 1. Sleek Scrubber Bar
-                let cached_frames = playback.cached_frames();
+                let cached_frames = playback.map(|p| p.cached_frames()).unwrap_or_default();
                 if let Some(new_frame) = Playbar::show(
                     ui,
                     "fs_overlay_playbar",
@@ -171,18 +171,21 @@ impl FullscreenOverlay {
                     .rounding(Rounding::same(ROUNDING))
                     .min_size(Vec2::new(34.0, 24.0));
 
-                    if ui.add(play_btn).on_hover_text(play_tip).clicked() {
+                    let can_play = playback.is_some();
+                    if ui.add_enabled(can_play, play_btn).on_hover_text(play_tip).clicked() {
                         view.is_playing = !view.is_playing;
                         view.last_frame_time = Instant::now();
                         if view.is_playing && view.current_frame + 1 >= total_frames {
                             view.current_frame = 0;
                         }
                         let time_sec = view.current_frame as f32 / video.fps.max(1.0);
-                        if let Ok(mut a) = playback.audio.lock() {
-                            if view.is_playing {
-                                a.play(time_sec);
-                            } else {
-                                a.pause();
+                        if let Some(pb) = playback {
+                            if let Ok(mut a) = pb.audio.lock() {
+                                if view.is_playing {
+                                    a.play(time_sec);
+                                } else {
+                                    a.pause();
+                                }
                             }
                         }
                     }
@@ -226,7 +229,7 @@ impl FullscreenOverlay {
                     widgets::toolbar_divider(ui);
 
                     // Audio Volume & Mute Controls
-                    let has_audio = playback.audio.lock().map(|a| a.has_audio()).unwrap_or(false);
+                    let has_audio = playback.and_then(|p| p.audio.lock().ok()).map(|a| a.has_audio()).unwrap_or(false);
                     if has_audio {
                         let mute_glyph = if view.is_muted || view.volume == 0.0 {
                             icon::SPEAKER_SLASH
@@ -238,8 +241,10 @@ impl FullscreenOverlay {
 
                         if widgets::icon_button(ui, mute_glyph, view.is_muted, "Toggle Audio Mute [M]").clicked() {
                             view.is_muted = !view.is_muted;
-                            if let Ok(mut a) = playback.audio.lock() {
-                                a.set_muted(view.is_muted);
+                            if let Some(pb) = playback {
+                                if let Ok(mut a) = pb.audio.lock() {
+                                    a.set_muted(view.is_muted);
+                                }
                             }
                         }
 
@@ -253,11 +258,15 @@ impl FullscreenOverlay {
                             if view.is_muted && vol > 0.0 {
                                 view.is_muted = false;
                             }
-                            if let Ok(mut a) = playback.audio.lock() {
-                                a.set_volume(view.volume);
-                                a.set_muted(view.is_muted);
+                            if let Some(pb) = playback {
+                                if let Ok(mut a) = pb.audio.lock() {
+                                    a.set_volume(view.volume);
+                                    a.set_muted(view.is_muted);
+                                }
                             }
                         }
+                    } else if playback.is_none() {
+                        ui.label(RichText::new("Loading...").size(FONT_CAPTION).color(TEXT_MUTED));
                     } else {
                         ui.label(RichText::new("No Audio").size(FONT_CAPTION).color(TEXT_MUTED));
                     }

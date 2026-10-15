@@ -34,6 +34,13 @@ pub struct PlayerView {
     pub last_shown_frame: Option<Arc<crate::mlv::DecodedFrame>>,
     pub last_pointer_pos: Option<egui::Pos2>,
     pub last_interaction_time: Instant,
+    pub rating_osd: Option<(u8, Instant)>,
+}
+
+impl PlayerView {
+    pub fn trigger_rating_cue(&mut self, rating: u8) {
+        self.rating_osd = Some((rating, Instant::now()));
+    }
 }
 
 impl Default for PlayerView {
@@ -53,6 +60,7 @@ impl Default for PlayerView {
             last_shown_frame: None,
             last_pointer_pos: None,
             last_interaction_time: Instant::now(),
+            rating_osd: None,
         }
     }
 }

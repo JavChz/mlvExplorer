@@ -14,7 +14,7 @@ impl TransportBar {
         view: &mut PlayerView,
         ui: &mut Ui,
         video: &VideoRecord,
-        playback: &Playback,
+        playback: Option<&Playback>,
         total_frames: usize,
     ) -> Option<PlayerAction> {
         let mut action = None;
@@ -24,7 +24,7 @@ impl TransportBar {
             .inner_margin(egui::Margin::symmetric(8.0, 4.0))
             .show(ui, |ui| {
                 // A. Scrubber Playbar
-                let cached_frames = playback.cached_frames();
+                let cached_frames = playback.map(|p| p.cached_frames()).unwrap_or_default();
                 if let Some(new_frame) = Playbar::show(
                     ui,
                     "player_main_playbar",
@@ -98,18 +98,21 @@ impl TransportBar {
                     .rounding(Rounding::same(ROUNDING))
                     .min_size(Vec2::new(32.0, CONTROL_HEIGHT));
 
-                    if ui.add(play_btn).on_hover_text(play_tip).clicked() {
+                    let can_play = playback.is_some();
+                    if ui.add_enabled(can_play, play_btn).on_hover_text(play_tip).clicked() {
                         view.is_playing = !view.is_playing;
                         view.last_frame_time = Instant::now();
                         if view.is_playing && view.current_frame + 1 >= total_frames {
                             view.current_frame = 0;
                         }
                         let time_sec = view.current_frame as f32 / video.fps.max(1.0);
-                        if let Ok(mut a) = playback.audio.lock() {
-                            if view.is_playing {
-                                a.play(time_sec);
-                            } else {
-                                a.pause();
+                        if let Some(pb) = playback {
+                            if let Ok(mut a) = pb.audio.lock() {
+                                if view.is_playing {
+                                    a.play(time_sec);
+                                } else {
+                                    a.pause();
+                                }
                             }
                         }
                     }
@@ -143,8 +146,10 @@ impl TransportBar {
                         let is_active = (view.playback_speed - spd).abs() < 0.05;
                         if widgets::toggle_button(ui, is_active, format!("{}x", spd)).clicked() {
                             view.playback_speed = spd;
-                            if let Ok(mut a) = playback.audio.lock() {
-                                a.set_speed(spd);
+                            if let Some(pb) = playback {
+                                if let Ok(mut a) = pb.audio.lock() {
+                                    a.set_speed(spd);
+                                }
                             }
                         }
                     }
@@ -152,7 +157,7 @@ impl TransportBar {
                     widgets::toolbar_divider(ui);
 
                     // Audio Volume & Mute Controls
-                    let has_audio = playback.audio.lock().map(|a| a.has_audio()).unwrap_or(false);
+                    let has_audio = playback.and_then(|p| p.audio.lock().ok()).map(|a| a.has_audio()).unwrap_or(false);
                     if has_audio {
                         let mute_glyph = if view.is_muted || view.volume == 0.0 {
                             icon::SPEAKER_SLASH
@@ -164,8 +169,10 @@ impl TransportBar {
 
                         if widgets::icon_button(ui, mute_glyph, view.is_muted, "Toggle Audio Mute").clicked() {
                             view.is_muted = !view.is_muted;
-                            if let Ok(mut a) = playback.audio.lock() {
-                                a.set_muted(view.is_muted);
+                            if let Some(pb) = playback {
+                                if let Ok(mut a) = pb.audio.lock() {
+                                    a.set_muted(view.is_muted);
+                                }
                             }
                         }
 
@@ -178,11 +185,15 @@ impl TransportBar {
                             if view.is_muted && vol > 0.0 {
                                 view.is_muted = false;
                             }
-                            if let Ok(mut a) = playback.audio.lock() {
-                                a.set_volume(view.volume);
-                                a.set_muted(view.is_muted);
+                            if let Some(pb) = playback {
+                                if let Ok(mut a) = pb.audio.lock() {
+                                    a.set_volume(view.volume);
+                                    a.set_muted(view.is_muted);
+                                }
                             }
                         }
+                    } else if playback.is_none() {
+                        ui.label(RichText::new("Loading...").size(FONT_CAPTION).color(text_muted(ui)));
                     } else {
                         ui.label(RichText::new("No Audio").size(FONT_CAPTION).color(text_muted(ui)));
                     }

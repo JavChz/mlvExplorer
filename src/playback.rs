@@ -26,20 +26,31 @@ pub struct Playback {
     pub source: Arc<FrameSource>,
     pub audio: Arc<Mutex<crate::audio::AudioEngine>>,
     shared: Arc<Shared>,
+    audio_rx: Mutex<Option<crossbeam_channel::Receiver<Option<(crate::mlv::types::AudioMetadata, Vec<i16>)>>>>,
 }
 
 impl Playback {
-    pub fn new(source: Arc<FrameSource>, ctx: egui::Context) -> Self {
+    pub fn from_loaded_data(
+        source: Arc<FrameSource>,
+        first_frame: Option<Arc<DecodedFrame>>,
+        ctx: egui::Context,
+    ) -> Self {
         let m = &source.clip.meta;
         let frame_bytes = (m.width as usize * m.height as usize * 2).max(1);
         // ~1.5 GB budget for read-ahead buffer so playback never starves
         let ahead = (1536 * 1024 * 1024 / frame_bytes).clamp(12, 120);
+
+        let mut initial_cache = HashMap::new();
+        if let Some(ff) = first_frame {
+            initial_cache.insert(0, ff);
+        }
+
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 target: 0,
                 ahead,
                 looping: true,
-                cache: HashMap::new(),
+                cache: initial_cache,
                 in_flight: HashSet::new(),
                 quit: false,
                 decoded_times: Vec::new(),
@@ -48,12 +59,19 @@ impl Playback {
             cv: Condvar::new(),
         });
 
-        // Initialize Audio Engine
-        let mut audio_engine = crate::audio::AudioEngine::new();
-        if let Some((audio_meta, pcm_samples)) = source.load_audio_pcm() {
-            audio_engine.load(audio_meta, pcm_samples);
-        }
+        // Initialize Audio Engine on caller thread (main UI thread)
+        let audio_engine = crate::audio::AudioEngine::new();
         let audio = Arc::new(Mutex::new(audio_engine));
+
+        // Asynchronously load audio PCM on a background thread without moving AudioEngine across threads
+        let (audio_tx, audio_rx) = crossbeam_channel::bounded(1);
+        let source_clone = source.clone();
+        let ctx_clone = ctx.clone();
+        std::thread::spawn(move || {
+            let res = source_clone.load_audio_pcm();
+            let _ = audio_tx.send(res);
+            ctx_clone.request_repaint();
+        });
 
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
@@ -65,7 +83,38 @@ impl Playback {
             let ctx = ctx.clone();
             std::thread::spawn(move || worker(shared, source, ctx));
         }
-        Self { source, audio, shared }
+        Self {
+            source,
+            audio,
+            shared,
+            audio_rx: Mutex::new(Some(audio_rx)),
+        }
+    }
+
+    /// Poll asynchronous audio extraction and upload PCM samples into audio engine
+    pub fn update_audio(&self) {
+        let mut rx_guard = self.audio_rx.lock().unwrap();
+        if let Some(ref rx) = *rx_guard {
+            match rx.try_recv() {
+                Ok(audio_opt) => {
+                    if let Some((meta, samples)) = audio_opt {
+                        if let Ok(mut engine) = self.audio.lock() {
+                            engine.load(meta, samples);
+                        }
+                    }
+                    *rx_guard = None; // Finished loading audio
+                }
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    *rx_guard = None;
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => {}
+            }
+        }
+    }
+
+    pub fn new(source: Arc<FrameSource>, ctx: egui::Context) -> Self {
+        let first_frame = source.decode(0).ok().map(Arc::new);
+        Self::from_loaded_data(source, first_frame, ctx)
     }
 
     pub fn frame_count(&self) -> usize {

@@ -12,7 +12,7 @@ impl HeaderBar {
         view: &mut PlayerView,
         ui: &mut Ui,
         video: &VideoRecord,
-        playback: &Playback,
+        playback: Option<&Playback>,
     ) -> Option<PlayerAction> {
         let mut action = None;
 
@@ -93,14 +93,18 @@ impl HeaderBar {
                 widgets::toolbar_divider(ui);
 
                 // Buffer status badge
-                let ready_ahead = playback.ready_ahead(view.current_frame, 24);
-                let is_realtime = ready_ahead >= 3 || (!view.is_playing && playback.is_ready(view.current_frame));
-                let (status_text, status_col) = if !view.is_playing {
-                    (format!("READY ({})", playback.cache_count()), text_secondary(ui))
-                } else if is_realtime {
-                    ("REAL-TIME".to_string(), FLAG_PICKED)
+                let (status_text, status_col) = if let Some(pb) = playback {
+                    let ready_ahead = pb.ready_ahead(view.current_frame, 24);
+                    let is_realtime = ready_ahead >= 3 || (!view.is_playing && pb.is_ready(view.current_frame));
+                    if !view.is_playing {
+                        (format!("READY ({})", pb.cache_count()), text_secondary(ui))
+                    } else if is_realtime {
+                        ("REAL-TIME".to_string(), FLAG_PICKED)
+                    } else {
+                        ("BUFFERING".to_string(), WARNING)
+                    }
                 } else {
-                    ("BUFFERING".to_string(), WARNING)
+                    ("LOADING CLIP…".to_string(), ACCENT_HOVER)
                 };
                 ui.label(RichText::new(status_text).size(FONT_CAPTION).color(status_col));
 

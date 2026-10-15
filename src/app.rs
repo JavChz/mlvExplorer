@@ -29,6 +29,16 @@ pub struct ClipSettingsClipboard {
     pub camera_unit: Option<String>,
 }
 
+struct LoadedClipData {
+    source: std::sync::Arc<FrameSource>,
+    first_frame: Option<std::sync::Arc<crate::mlv::DecodedFrame>>,
+}
+
+struct LoadingClipState {
+    video_id: i64,
+    receiver: crossbeam_channel::Receiver<Result<LoadedClipData, String>>,
+}
+
 pub struct MlvExplorerApp {
     config: crate::config::AppConfig,
     db: Database,
@@ -48,6 +58,7 @@ pub struct MlvExplorerApp {
     // Media & Playback
     thumb_mgr: ThumbnailManager,
     current_playback: Option<(i64, Playback)>, // (video_id, Playback)
+    loading_clip: Option<LoadingClipState>,
 
     // UI Panels & Windows
     grid_view: GridView,
@@ -112,6 +123,7 @@ impl MlvExplorerApp {
             settings_clipboard: None,
             thumb_mgr,
             current_playback: None,
+            loading_clip: None,
             grid_view: GridView::default(),
             player_view: PlayerView::default(),
             inspector: Inspector::default(),
@@ -154,23 +166,42 @@ impl MlvExplorerApp {
         }
     }
 
-    /// Reload catalog data, facets, and filter criteria
+    /// Reload catalog data, facets, and filter criteria, preserving clip selection by ID
     pub fn reload_catalog(&mut self) {
+        // Collect IDs of currently selected clips before replacing self.videos
+        let prev_selected_ids: std::collections::HashSet<i64> = self.selected_indices
+            .iter()
+            .filter_map(|&idx| self.videos.get(idx).map(|v| v.id))
+            .collect();
+        let prev_active_id = self.selected_video_idx
+            .and_then(|idx| self.videos.get(idx).map(|v| v.id));
+
         if let Ok(videos) = self.db.get_videos(&self.filter) {
             self.videos = videos;
-            if let Some(idx) = self.selected_video_idx {
-                if idx >= self.videos.len() {
-                    self.selected_video_idx = if self.videos.is_empty() { None } else { Some(0) };
+
+            // Re-map selected IDs to their new index positions in self.videos
+            let mut new_selected_indices = Vec::new();
+            let mut new_active_idx = None;
+
+            for (idx, video) in self.videos.iter().enumerate() {
+                if prev_selected_ids.contains(&video.id) {
+                    new_selected_indices.push(idx);
+                }
+                if prev_active_id == Some(video.id) {
+                    new_active_idx = Some(idx);
                 }
             }
-            // Keep selected_indices valid within bounds
-            self.selected_indices.retain(|&i| i < self.videos.len());
-            if self.selected_indices.is_empty() {
-                if let Some(idx) = self.selected_video_idx {
-                    self.selected_indices.push(idx);
-                }
-            } else if self.selected_video_idx.is_none() {
-                self.selected_video_idx = self.selected_indices.first().copied();
+
+            if !new_selected_indices.is_empty() {
+                self.selected_indices = new_selected_indices;
+                self.selected_video_idx = new_active_idx.or_else(|| self.selected_indices.first().copied());
+            } else if let Some(new_idx) = new_active_idx {
+                self.selected_indices = vec![new_idx];
+                self.selected_video_idx = Some(new_idx);
+            } else {
+                // If none of the previously selected clips exist under the current filter, clear selection
+                self.selected_indices.clear();
+                self.selected_video_idx = None;
             }
         }
 
@@ -197,11 +228,13 @@ impl MlvExplorerApp {
     fn sync_playback(&mut self) {
         let Some(idx) = self.selected_video_idx else {
             self.current_playback = None;
+            self.loading_clip = None;
             return;
         };
 
         let Some(vid) = self.videos.get(idx) else {
             self.current_playback = None;
+            self.loading_clip = None;
             return;
         };
 
@@ -209,40 +242,70 @@ impl MlvExplorerApp {
         if current_id != Some(vid.id) {
             self.current_playback = None;
         }
+        if let Some(loading) = &self.loading_clip {
+            if loading.video_id != vid.id {
+                self.loading_clip = None;
+            }
+        }
     }
 
-    /// Ensure active playback engine is loaded for current video
-    fn ensure_playback(&mut self, ctx: &egui::Context) -> bool {
-        let Some(idx) = self.selected_video_idx else { return false; };
-        let Some(vid) = self.videos.get(idx) else { return false; };
+    /// Ensure active playback engine is loading or loaded asynchronously for current video
+    fn ensure_playback_async(&mut self, ctx: &egui::Context) {
+        let Some(idx) = self.selected_video_idx else { return; };
+        let Some(vid) = self.videos.get(idx) else { return; };
 
-        let needs_load = match &self.current_playback {
-            Some((id, _)) => *id != vid.id,
-            None => true,
-        };
-
-        if needs_load {
-            match FrameSource::open(&vid.file_path) {
-                Ok(source) => {
-                    let pb = Playback::new(source, ctx.clone());
-                    if let Ok(mut a) = pb.audio.lock() {
-                        a.set_muted(self.player_view.is_muted);
-                        a.set_volume(self.player_view.volume);
-                        a.set_speed(self.player_view.playback_speed);
-                    }
-                    self.current_playback = Some((vid.id, pb));
-                    self.player_view.current_frame = 0;
-                    self.player_view.is_playing = false;
-                    true
-                }
-                Err(e) => {
-                    self.status_bar_text = format!("Error opening MLV: {e}");
-                    false
-                }
+        // 1. If already loaded for this exact video, nothing to do
+        if let Some((id, _)) = &self.current_playback {
+            if *id == vid.id {
+                return;
             }
-        } else {
-            true
         }
+
+        // 2. If already in-flight loading for this exact video, debounce repeated clicks
+        if let Some(loading) = &self.loading_clip {
+            if loading.video_id == vid.id {
+                return;
+            }
+        }
+
+        // 3. Pause audio of previous playback if any
+        if let Some((_, ref pb)) = self.current_playback {
+            if let Ok(mut a) = pb.audio.lock() {
+                a.pause();
+            }
+        }
+        self.current_playback = None;
+
+        // 4. Reset player view state
+        self.player_view.current_frame = 0;
+        self.player_view.is_playing = false;
+        self.player_view.last_shown_frame = None;
+
+        // 5. Start background worker
+        let vid_id = vid.id;
+        let file_path = vid.file_path.clone();
+        let file_name = vid.file_name.clone();
+        let ctx_clone = ctx.clone();
+
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        self.status_bar_text = format!("Loading {}...", file_name);
+
+        std::thread::spawn(move || {
+            let res = FrameSource::open(&file_path)
+                .map(|source| {
+                    let first_frame = source.decode(0).ok().map(std::sync::Arc::new);
+                    LoadedClipData { source, first_frame }
+                });
+            let _ = tx.send(res);
+            ctx_clone.request_repaint();
+        });
+
+        self.loading_clip = Some(LoadingClipState {
+            video_id: vid_id,
+            receiver: rx,
+        });
+
+        ctx.request_repaint();
     }
 
     /// Start a background import of files or directories, skipping duplicates and tracking progress
@@ -595,7 +658,7 @@ impl MlvExplorerApp {
     pub fn navigate_to_player(&mut self, ctx: &egui::Context) {
         if self.selected_video_idx.is_some() {
             self.view_mode = ViewMode::Player;
-            self.ensure_playback(ctx);
+            self.ensure_playback_async(ctx);
             ctx.request_repaint();
         }
     }
@@ -733,7 +796,7 @@ impl MlvExplorerApp {
                     self.view_mode = ViewMode::Player;
                     self.player_view.is_fullscreen = true;
                     self.player_view.show_overlay_controls = false;
-                    self.ensure_playback(ctx);
+                    self.ensure_playback_async(ctx);
                 }
             }
         }
@@ -851,6 +914,10 @@ impl MlvExplorerApp {
                         let _ = self.db.set_rating(video.id, r);
                     }
                 }
+                if self.view_mode == ViewMode::Player {
+                    self.player_view.trigger_rating_cue(r);
+                    ctx.request_repaint();
+                }
             }
 
             // Flags: P -> Pick, X -> Reject, U -> Unflag
@@ -919,6 +986,41 @@ impl eframe::App for MlvExplorerApp {
                     }
                     self.status_bar_text = summary;
                     self.reload_catalog();
+                }
+            }
+        }
+
+        // Poll background clip loading
+        if let Some(loading) = &self.loading_clip {
+            match loading.receiver.try_recv() {
+                Ok(Ok(loaded)) => {
+                    let id = loading.video_id;
+                    let initial_frame = loaded.first_frame.clone();
+                    let pb = Playback::from_loaded_data(loaded.source, loaded.first_frame, ctx.clone());
+                    if let Ok(mut a) = pb.audio.lock() {
+                        a.set_muted(self.player_view.is_muted);
+                        a.set_volume(self.player_view.volume);
+                        a.set_speed(self.player_view.playback_speed);
+                    }
+                    self.current_playback = Some((id, pb));
+                    if let Some(ff) = initial_frame {
+                        self.player_view.last_shown_frame = Some(ff);
+                    }
+                    self.loading_clip = None;
+                    self.status_bar_text = "Ready".to_string();
+                    ctx.request_repaint();
+                }
+                Ok(Err(e)) => {
+                    self.status_bar_text = format!("Error opening MLV: {e}");
+                    self.loading_clip = None;
+                    ctx.request_repaint();
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => {
+                    // Continuous repaint while loading clip to keep spinner smoothly animated
+                    ctx.request_repaint_after(std::time::Duration::from_millis(16));
+                }
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    self.loading_clip = None;
                 }
             }
         }
@@ -1158,7 +1260,7 @@ impl eframe::App for MlvExplorerApp {
                             self.view_mode = ViewMode::Player;
                             self.player_view.is_fullscreen = true;
                             self.player_view.show_overlay_controls = false;
-                            self.ensure_playback(ctx);
+                            self.ensure_playback_async(ctx);
                         }
                     }
                     TopBarAction::ZoomIn => {
@@ -1274,8 +1376,9 @@ impl eframe::App for MlvExplorerApp {
                 });
         }
 
-        // 3. Left Navigator Sidebar
-        if !is_fullscreen_player {
+        // 3. Left Navigator Sidebar (Library & Filters)
+        // Hidden in Player mode to remove filters sidebar and give full viewport width to the video player
+        if self.view_mode == ViewMode::Grid {
             egui::SidePanel::left("studio_left_navigator")
                 .default_width(220.0)
                 .width_range(180.0..=320.0)
@@ -1329,6 +1432,10 @@ impl eframe::App for MlvExplorerApp {
                                 self.refresh_facets();
                                 if self.filter.min_rating.is_some() {
                                     self.reload_catalog();
+                                }
+                                if self.view_mode == ViewMode::Player {
+                                    self.player_view.trigger_rating_cue(rating);
+                                    ctx.request_repaint();
                                 }
                             }
                             crate::ui::inspector::InspectorAction::BatchSetFlag(flag) => {
@@ -1473,7 +1580,8 @@ impl eframe::App for MlvExplorerApp {
                                 self.selected_video_idx = Some(idx);
                                 self.selected_indices = vec![idx];
                                 self.view_mode = ViewMode::Player;
-                                self.ensure_playback(ctx);
+                                self.ensure_playback_async(ctx);
+                                ctx.request_repaint();
                             }
                             GridAction::TogglePick(id) => {
                                 if let Some(vid) = self.videos.iter_mut().find(|v| v.id == id) {
@@ -1524,50 +1632,56 @@ impl eframe::App for MlvExplorerApp {
                     }
                 }
                 ViewMode::Player => {
-                    let has_pb = self.ensure_playback(ctx);
-                    if has_pb {
-                        if let Some((_id, ref mut pb)) = self.current_playback {
-                            if let Some(idx) = self.selected_video_idx {
-                                if let Some(vid) = self.videos.get(idx) {
-                                    if let Some(act) = self.player_view.show(ui, vid, pb) {
-                                        match act {
-                                            PlayerAction::BackToGrid => {
-                                                self.navigate_to_grid(ctx);
-                                            }
-                                            PlayerAction::Seek(frame) => {
-                                                pb.set_target(frame, self.player_view.is_looping);
-                                                let time_sec = frame as f32 / vid.fps.max(1.0);
-                                                if let Ok(mut a) = pb.audio.lock() {
-                                                    a.seek(time_sec, self.player_view.is_playing);
-                                                }
-                                            }
-                                            PlayerAction::SetRating(rating) => {
-                                                let id = vid.id;
-                                                let _ = self.db.set_rating(id, rating);
-                                                self.reload_catalog();
-                                            }
-                                            PlayerAction::SetFlag(flag) => {
-                                                let id = vid.id;
-                                                let _ = self.db.set_flag(id, flag);
-                                                self.reload_catalog();
-                                            }
-                                            PlayerAction::SetStretch(factor) => {
-                                                let id = vid.id;
-                                                let _ = self.db.set_stretch_factor(id, factor);
-                                                self.reload_catalog();
-                                            }
-                                            PlayerAction::ToggleFullscreen => {
-                                                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.player_view.is_fullscreen));
-                                                ctx.request_repaint();
-                                            }
-                                            PlayerAction::OpenInMlvApp => {
-                                                let path = PathBuf::from(&vid.file_path);
-                                                self.open_in_mlv_app(&path);
+                    self.ensure_playback_async(ctx);
+                    if let Some(idx) = self.selected_video_idx {
+                        if let Some(vid) = self.videos.get(idx) {
+                            let pb_opt = self.current_playback.as_ref().and_then(|(id, pb)| {
+                                if *id == vid.id { Some(pb) } else { None }
+                            });
+                            let thumb_id = self.thumb_mgr.get_or_request(vid.id, &vid.file_path).map(|t| t.id());
+                            if let Some(act) = self.player_view.show(ui, vid, pb_opt, thumb_id) {
+                                match act {
+                                    PlayerAction::BackToGrid => {
+                                        self.navigate_to_grid(ctx);
+                                    }
+                                    PlayerAction::Seek(frame) => {
+                                        if let Some(pb) = pb_opt {
+                                            pb.set_target(frame, self.player_view.is_looping);
+                                            let time_sec = frame as f32 / vid.fps.max(1.0);
+                                            if let Ok(mut a) = pb.audio.lock() {
+                                                a.seek(time_sec, self.player_view.is_playing);
                                             }
                                         }
                                     }
+                                    PlayerAction::SetRating(rating) => {
+                                        let id = vid.id;
+                                        let _ = self.db.set_rating(id, rating);
+                                        self.reload_catalog();
+                                        self.player_view.trigger_rating_cue(rating);
+                                        ctx.request_repaint();
+                                    }
+                                    PlayerAction::SetFlag(flag) => {
+                                        let id = vid.id;
+                                        let _ = self.db.set_flag(id, flag);
+                                        self.reload_catalog();
+                                    }
+                                    PlayerAction::SetStretch(factor) => {
+                                        let id = vid.id;
+                                        let _ = self.db.set_stretch_factor(id, factor);
+                                        self.reload_catalog();
+                                    }
+                                    PlayerAction::ToggleFullscreen => {
+                                        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.player_view.is_fullscreen));
+                                        ctx.request_repaint();
+                                    }
+                                    PlayerAction::OpenInMlvApp => {
+                                        let path = PathBuf::from(&vid.file_path);
+                                        self.open_in_mlv_app(&path);
+                                    }
                                 }
                             }
+                        } else {
+                            self.view_mode = ViewMode::Grid;
                         }
                     } else {
                         self.view_mode = ViewMode::Grid;
@@ -1655,6 +1769,7 @@ mod tests {
             settings_clipboard: None,
             thumb_mgr,
             current_playback: None,
+            loading_clip: None,
             grid_view: GridView::default(),
             player_view: PlayerView::default(),
             inspector: Inspector::default(),
@@ -1699,5 +1814,214 @@ mod tests {
         // Back navigation returns to Grid
         assert!(app.navigate_back(&ctx));
         assert_eq!(app.view_mode, ViewMode::Grid);
+    }
+
+    #[test]
+    fn test_player_mode_sidebar_and_async_loading() {
+        let ctx = egui::Context::default();
+        let db = Database::open(Path::new(":memory:")).unwrap();
+        let thumb_mgr = ThumbnailManager::new(PathBuf::from(":memory:"), ctx.clone());
+        let (import_tx, import_rx) = crossbeam_channel::unbounded();
+
+        let mut app = MlvExplorerApp {
+            config: AppConfig::default(),
+            db,
+            view_mode: ViewMode::Grid,
+            videos: Vec::new(),
+            selected_video_idx: None,
+            selected_indices: Vec::new(),
+            filter: FilterCriteria::default(),
+            facets: Facets::default(),
+            all_tags: Vec::new(),
+            cameras: Vec::new(),
+            lenses: Vec::new(),
+            settings_clipboard: None,
+            thumb_mgr,
+            current_playback: None,
+            loading_clip: None,
+            grid_view: GridView::default(),
+            player_view: PlayerView::default(),
+            inspector: Inspector::default(),
+            settings_dialog: SettingsDialog::default(),
+            delete_confirm_dialog: DeleteConfirmDialog::default(),
+            keyword_dialog: KeywordManagerDialog::default(),
+            ingest_dialog: IngestDialog::default(),
+            help_dialogs: HelpDialogs::default(),
+            update_manager: crate::updater::UpdateManager::default(),
+            import_tx,
+            import_rx,
+            import_progress: None,
+            import_cancel_flag: None,
+            gpu_info: String::new(),
+            status_bar_text: String::new(),
+        };
+
+        // When in Grid mode, left sidebar is active
+        assert_eq!(app.view_mode, ViewMode::Grid);
+
+        // When switching to Player mode with no video selected, stays in Grid
+        app.navigate_to_player(&ctx);
+        assert_eq!(app.view_mode, ViewMode::Grid);
+
+        // Add dummy video record
+        app.videos.push(VideoRecord {
+            id: 42,
+            file_name: "TEST0001.MLV".to_string(),
+            file_path: "C:/fake/TEST0001.MLV".to_string(),
+            file_size: 1024,
+            width: 1920,
+            height: 1080,
+            fps: 24.0,
+            frame_count: 100,
+            duration_seconds: 4.166,
+            bits_per_pixel: 14,
+            camera_name: "Canon 5D3".to_string(),
+            camera_serial: String::new(),
+            lens_name: "50mm".to_string(),
+            focal_length_mm: 50,
+            aperture_fstop: 1.8,
+            iso: 800,
+            shutter_speed: 48,
+            white_balance_kelvin: 5600,
+            date_recorded: None,
+            imported_at: chrono::Utc::now().to_rfc3339(),
+            rating: 0,
+            flag: PickFlag::Unflagged,
+            notes: String::new(),
+            color_label: String::new(),
+            codec: "RAW 14-bit".to_string(),
+            has_audio: false,
+            chunk_count: 1,
+            stretch_factor: 1.0,
+            scene: None,
+            shot: None,
+            take: None,
+            location: None,
+            camera_unit: None,
+            tags: Vec::new(),
+        });
+        app.selected_video_idx = Some(0);
+
+        // Transition to player
+        app.navigate_to_player(&ctx);
+        assert_eq!(app.view_mode, ViewMode::Player);
+        // Loading was triggered asynchronously without freezing
+        assert!(app.loading_clip.is_some());
+        assert_eq!(app.loading_clip.as_ref().unwrap().video_id, 42);
+
+        // Calling navigate_to_player again while in-flight debounces repeated clicks
+        app.navigate_to_player(&ctx);
+        assert_eq!(app.loading_clip.as_ref().unwrap().video_id, 42);
+
+        // Thumbnail retrieval works cleanly
+        let thumb = app.thumb_mgr.get(42);
+        assert!(thumb.is_none());
+
+        // Initial decoded frame display is properly tracked
+        let fake_frame = std::sync::Arc::new(crate::mlv::DecodedFrame {
+            index: 0,
+            width: 1920,
+            height: 1080,
+            data: vec![0u16; 1920 * 1080],
+            black: 2048.0,
+            white: 15000.0,
+        });
+        app.player_view.last_shown_frame = Some(fake_frame.clone());
+        assert!(app.player_view.last_shown_frame.is_some());
+        assert_eq!(app.player_view.last_shown_frame.as_ref().unwrap().index, 0);
+    }
+
+    #[test]
+    fn test_selection_preserved_by_clip_id_across_filter_changes() {
+        let ctx = egui::Context::default();
+        let db = Database::open(Path::new(":memory:")).unwrap();
+        let thumb_mgr = ThumbnailManager::new(PathBuf::from(":memory:"), ctx.clone());
+        let (import_tx, import_rx) = crossbeam_channel::unbounded();
+
+        let mut app = MlvExplorerApp {
+            config: AppConfig::default(),
+            db,
+            view_mode: ViewMode::Grid,
+            videos: Vec::new(),
+            selected_video_idx: None,
+            selected_indices: Vec::new(),
+            filter: FilterCriteria::default(),
+            facets: Facets::default(),
+            all_tags: Vec::new(),
+            cameras: Vec::new(),
+            lenses: Vec::new(),
+            settings_clipboard: None,
+            thumb_mgr,
+            current_playback: None,
+            loading_clip: None,
+            grid_view: GridView::default(),
+            player_view: PlayerView::default(),
+            inspector: Inspector::default(),
+            settings_dialog: SettingsDialog::default(),
+            delete_confirm_dialog: DeleteConfirmDialog::default(),
+            keyword_dialog: KeywordManagerDialog::default(),
+            ingest_dialog: IngestDialog::default(),
+            help_dialogs: HelpDialogs::default(),
+            update_manager: crate::updater::UpdateManager::default(),
+            import_tx,
+            import_rx,
+            import_progress: None,
+            import_cancel_flag: None,
+            gpu_info: String::new(),
+            status_bar_text: String::new(),
+        };
+
+        // Insert 4 dummy video records into DB
+        for i in 1..=4 {
+            let meta = crate::mlv::MlvMetadata {
+                file_path: format!("C:/fake/CLIP{:04}.MLV", i),
+                width: 1920,
+                height: 1080,
+                fps_num: 24,
+                fps_den: 1,
+                frame_count: 100,
+                ..Default::default()
+            };
+            let row_id = app.db.upsert_video(&meta).unwrap();
+            if i % 2 == 0 {
+                app.db.set_flag(row_id, PickFlag::Picked).unwrap();
+            }
+        }
+
+        // 1. Initial unfiltered load: 4 clips total
+        app.reload_catalog();
+        assert_eq!(app.videos.len(), 4);
+        let id_clip2 = app.videos[1].id;
+        let id_clip4 = app.videos[3].id;
+
+        // 2. Filter by Picked: only clips 2 and 4 match (indices 0 and 1)
+        app.filter.flag = Some(PickFlag::Picked);
+        app.reload_catalog();
+        assert_eq!(app.videos.len(), 2);
+        assert_eq!(app.videos[0].id, id_clip2);
+        assert_eq!(app.videos[1].id, id_clip4);
+
+        // Select both clips in the filtered view
+        app.selected_indices = vec![0, 1];
+        app.selected_video_idx = Some(0);
+
+        // 3. Turn off filter: back to All Clips (4 clips)
+        app.filter.flag = None;
+        app.reload_catalog();
+        assert_eq!(app.videos.len(), 4);
+
+        // Crucial bugfix check: the selected clips must STILL be clip 2 and clip 4 (indices 1 and 3),
+        // NOT the top 2 clips of the unfiltered list (indices 0 and 1)!
+        assert_eq!(app.selected_indices, vec![1, 3]);
+        assert_eq!(app.selected_video_idx, Some(1));
+        assert_eq!(app.videos[app.selected_indices[0]].id, id_clip2);
+        assert_eq!(app.videos[app.selected_indices[1]].id, id_clip4);
+
+        // 4. If filter is changed to Rejected (where neither clip 2 nor 4 exist), selection clears
+        app.filter.flag = Some(PickFlag::Rejected);
+        app.reload_catalog();
+        assert_eq!(app.videos.len(), 0);
+        assert!(app.selected_indices.is_empty());
+        assert_eq!(app.selected_video_idx, None);
     }
 }

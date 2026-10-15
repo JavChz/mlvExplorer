@@ -32,11 +32,11 @@ Bug: For the filters, if I click a camera, remove the lenses tags that are no lo
 
 ## UI Improvments
 
-- Add loaders where the operation takes too long.
+- [x] Add loaders where the operation takes too long (instant player transition with immediate frame 0 thumbnail preview, background MLV indexing, async background audio PCM decoding, and sleek animated loader HUD).
 - Improve keyboard handling (eg. add keywords from the sidebar not just the manager, make sure they aree added with enter and not only the mouse)
 - Add tooltips.
 - Make the ui more responsive and "smooth".
-- Make more different the grid view from the player view. Hide fields that are not relevant for the current mode (eg the library sidebar in the player view).
+- [x] Make more different the grid view from the player view. Hide fields that are not relevant for the current mode (hide the library/filters sidebar in player mode, preserving the metadata inspector).
 
 ## Known bugs
 

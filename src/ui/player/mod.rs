@@ -20,13 +20,17 @@ impl PlayerView {
         &mut self,
         ui: &mut Ui,
         video: &VideoRecord,
-        playback: &Playback,
+        playback: Option<&Playback>,
+        thumb_id: Option<egui::TextureId>,
     ) -> Option<PlayerAction> {
         let mut action = None;
-        let total_frames = playback.frame_count().max(1);
+        let total_frames = playback.map(|p| p.frame_count()).unwrap_or(video.frame_count as usize).max(1);
 
-        // Notify playback engine of target frame for read-ahead
-        playback.set_target(self.current_frame, self.is_looping);
+        // Notify playback engine of target frame for read-ahead and poll async audio upload
+        if let Some(pb) = playback {
+            pb.update_audio();
+            pb.set_target(self.current_frame, self.is_looping);
+        }
 
         let editing_text = ui.ctx().wants_keyboard_input();
 
@@ -69,17 +73,21 @@ impl PlayerView {
 
         // Play / Pause and Frame Stepping
         if !editing_text && ui.input(|i| i.key_pressed(egui::Key::Space)) {
-            self.is_playing = !self.is_playing;
-            self.last_frame_time = Instant::now();
-            if self.is_playing && self.current_frame + 1 >= total_frames {
-                self.current_frame = 0;
-            }
-            let time_sec = self.current_frame as f32 / video.fps.max(1.0);
-            if let Ok(mut a) = playback.audio.lock() {
-                if self.is_playing {
-                    a.play(time_sec);
-                } else {
-                    a.pause();
+            if playback.is_some() {
+                self.is_playing = !self.is_playing;
+                self.last_frame_time = Instant::now();
+                if self.is_playing && self.current_frame + 1 >= total_frames {
+                    self.current_frame = 0;
+                }
+                let time_sec = self.current_frame as f32 / video.fps.max(1.0);
+                if let Some(pb) = playback {
+                    if let Ok(mut a) = pb.audio.lock() {
+                        if self.is_playing {
+                            a.play(time_sec);
+                        } else {
+                            a.pause();
+                        }
+                    }
                 }
             }
         }
@@ -136,8 +144,10 @@ impl PlayerView {
 
         if !editing_text && ui.input(|i| i.key_pressed(egui::Key::M)) {
             self.is_muted = !self.is_muted;
-            if let Ok(mut a) = playback.audio.lock() {
-                a.set_muted(self.is_muted);
+            if let Some(pb) = playback {
+                if let Ok(mut a) = pb.audio.lock() {
+                    a.set_muted(self.is_muted);
+                }
             }
         }
 
@@ -156,40 +166,42 @@ impl PlayerView {
         let effective_fps = (video.fps * self.playback_speed).max(1.0);
         let frame_duration = std::time::Duration::from_secs_f32(1.0 / effective_fps);
 
-        if self.is_playing {
-            let has_audio = playback.audio.lock().map(|a| a.has_audio()).unwrap_or(false);
+        if self.is_playing && playback.is_some() {
+            let has_audio = playback.and_then(|p| p.audio.lock().ok()).map(|a| a.has_audio()).unwrap_or(false);
             if has_audio {
                 let mut should_loop = false;
                 let mut should_stop = false;
 
-                if let Ok(mut a) = playback.audio.lock() {
-                    a.set_speed(self.playback_speed);
+                if let Some(pb) = playback {
+                    if let Ok(mut a) = pb.audio.lock() {
+                        a.set_speed(self.playback_speed);
 
-                    if a.is_finished() {
-                        if self.is_looping {
-                            should_loop = true;
-                        } else {
-                            should_stop = true;
-                        }
-                    } else if let Some(audio_time) = a.current_playback_time() {
-                        let target_frame = (audio_time * video.fps).floor() as usize;
-                        if target_frame >= total_frames {
+                        if a.is_finished() {
                             if self.is_looping {
                                 should_loop = true;
                             } else {
                                 should_stop = true;
                             }
-                        } else {
-                            self.current_frame = target_frame;
+                        } else if let Some(audio_time) = a.current_playback_time() {
+                            let target_frame = (audio_time * video.fps).floor() as usize;
+                            if target_frame >= total_frames {
+                                if self.is_looping {
+                                    should_loop = true;
+                                } else {
+                                    should_stop = true;
+                                }
+                            } else {
+                                self.current_frame = target_frame;
+                            }
                         }
-                    }
 
-                    if should_loop {
-                        self.current_frame = 0;
-                        a.seek(0.0, true);
-                    } else if should_stop {
-                        self.is_playing = false;
-                        a.pause();
+                        if should_loop {
+                            self.current_frame = 0;
+                            a.seek(0.0, true);
+                        } else if should_stop {
+                            self.is_playing = false;
+                            a.pause();
+                        }
                     }
                 }
             } else {
@@ -206,10 +218,12 @@ impl PlayerView {
                 }
             }
             ui.ctx().request_repaint();
+        } else if playback.is_none() {
+            self.is_playing = false;
         }
 
         // 2. Main Viewport Canvas (Cinema Screen)
-        Canvas::show(self, ui, video, playback);
+        Canvas::show(self, ui, video, playback, thumb_id);
 
         // 3. Bottom Controls:
         if !self.is_fullscreen {

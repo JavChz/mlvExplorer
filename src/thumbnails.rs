@@ -112,6 +112,11 @@ impl ThumbnailManager {
         }
     }
 
+    /// Return cached texture handle if already loaded
+    pub fn get(&self, video_id: i64) -> Option<&TextureHandle> {
+        self.textures.get(&video_id)
+    }
+
     /// Request or get thumbnail texture for a video
     pub fn get_or_request(&mut self, video_id: i64, file_path: &str) -> Option<&TextureHandle> {
         if self.textures.contains_key(&video_id) {
