@@ -82,7 +82,7 @@ impl Inspector {
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
 
-                if let Some(a) = OrganizationSection::show(ui, vid, db) {
+                if let Some(a) = OrganizationSection::show(ui, vid, db, selected_count) {
                     action = Some(a);
                 }
                 if let Some(a) = ProductionSlateSection::show(ui, vid, db) {

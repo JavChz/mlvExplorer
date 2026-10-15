@@ -53,7 +53,13 @@ impl PlayerView {
             self.last_interaction_time = Instant::now();
             action = Some(PlayerAction::ToggleFullscreen);
         }
-        if self.is_fullscreen && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        let mouse_back = ui.input(|i| {
+            i.pointer.button_pressed(egui::PointerButton::Extra1)
+                || i.raw.events.iter().any(|e| matches!(e, egui::Event::PointerButton { button: egui::PointerButton::Extra1, pressed: true, .. }))
+        });
+        if mouse_back || (!editing_text && ui.input(|i| i.modifiers.alt && i.key_pressed(egui::Key::ArrowLeft))) {
+            action = Some(PlayerAction::BackToGrid);
+        } else if self.is_fullscreen && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.is_fullscreen = false;
             self.last_interaction_time = Instant::now();
             action = Some(PlayerAction::ToggleFullscreen);

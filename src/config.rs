@@ -25,6 +25,9 @@ pub struct AppConfig {
     pub backup_folder: Option<PathBuf>,
     /// Custom path to the MLV App executable.
     pub mlv_app_path: Option<PathBuf>,
+    /// Last destination directory used for SD / Card ingest.
+    #[serde(default)]
+    pub last_ingest_destination: Option<PathBuf>,
     /// Selected UI theme mode (Dark, Light, System)
     #[serde(default)]
     pub theme_mode: ThemeMode,
@@ -36,6 +39,7 @@ impl Default for AppConfig {
             last_catalog_path: None,
             backup_folder: None,
             mlv_app_path: None,
+            last_ingest_destination: None,
             theme_mode: ThemeMode::Dark,
         }
     }

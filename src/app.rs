@@ -56,6 +56,7 @@ pub struct MlvExplorerApp {
     settings_dialog: SettingsDialog,
     delete_confirm_dialog: DeleteConfirmDialog,
     keyword_dialog: KeywordManagerDialog,
+    ingest_dialog: IngestDialog,
     help_dialogs: HelpDialogs,
     update_manager: crate::updater::UpdateManager,
 
@@ -117,6 +118,7 @@ impl MlvExplorerApp {
             settings_dialog: SettingsDialog::default(),
             delete_confirm_dialog: DeleteConfirmDialog::default(),
             keyword_dialog: KeywordManagerDialog::default(),
+            ingest_dialog: IngestDialog::default(),
             help_dialogs: HelpDialogs::default(),
             update_manager: crate::updater::UpdateManager::default(),
             import_tx,
@@ -298,6 +300,83 @@ impl MlvExplorerApp {
         match ExternalLauncher::open_in_mlv_app(&self.db, self.config.mlv_app_path.as_ref(), file_path) {
             Ok(msg) => self.status_bar_text = msg,
             Err(e) => self.status_bar_text = e,
+        }
+    }
+
+    /// Open multiple selected clips in a single MLV App instance / session playlist
+    pub fn open_selection_in_mlv_app(&mut self, indices: &[usize]) {
+        let paths: Vec<PathBuf> = indices
+            .iter()
+            .filter_map(|&idx| self.videos.get(idx))
+            .map(|v| PathBuf::from(&v.file_path))
+            .collect();
+
+        if paths.is_empty() {
+            self.status_bar_text = "No clips selected to open in MLV App.".to_string();
+            return;
+        }
+
+        match ExternalLauncher::open_files_in_mlv_app(&self.db, self.config.mlv_app_path.as_ref(), &paths) {
+            Ok(msg) => self.status_bar_text = msg,
+            Err(e) => self.status_bar_text = e,
+        }
+    }
+
+    /// Open all clips tagged with a specific keyword in a single MLV App instance / session playlist
+    pub fn open_tag_in_mlv_app(&mut self, tag: &str) {
+        let mut filter = FilterCriteria::default();
+        filter.tag = Some(tag.to_string());
+        match self.db.get_videos(&filter) {
+            Ok(vids) => {
+                let paths: Vec<PathBuf> = vids.into_iter().map(|v| PathBuf::from(v.file_path)).collect();
+                if paths.is_empty() {
+                    self.status_bar_text = format!("No clips found tagged with '{}'.", tag);
+                } else {
+                    match ExternalLauncher::open_files_in_mlv_app(&self.db, self.config.mlv_app_path.as_ref(), &paths) {
+                        Ok(msg) => self.status_bar_text = format!("Keyword '{}': {}", tag, msg),
+                        Err(e) => self.status_bar_text = e,
+                    }
+                }
+            }
+            Err(e) => self.status_bar_text = format!("Failed to query clips for keyword '{}': {}", tag, e),
+        }
+    }
+
+    /// Open the entire catalog of clips in a single MLV App instance / session playlist
+    pub fn open_catalog_in_mlv_app(&mut self) {
+        match self.db.get_videos(&FilterCriteria::default()) {
+            Ok(vids) => {
+                let paths: Vec<PathBuf> = vids.into_iter().map(|v| PathBuf::from(v.file_path)).collect();
+                if paths.is_empty() {
+                    self.status_bar_text = "Catalog is empty. Import clips first.".to_string();
+                } else {
+                    match ExternalLauncher::open_files_in_mlv_app(&self.db, self.config.mlv_app_path.as_ref(), &paths) {
+                        Ok(msg) => self.status_bar_text = format!("Catalog: {}", msg),
+                        Err(e) => self.status_bar_text = e,
+                    }
+                }
+            }
+            Err(e) => self.status_bar_text = format!("Failed to query catalog clips: {}", e),
+        }
+    }
+
+    /// Open all clips with a specific pick flag (e.g. Picks) in a single MLV App instance / session playlist
+    pub fn open_flag_in_mlv_app(&mut self, flag: PickFlag) {
+        let mut filter = FilterCriteria::default();
+        filter.flag = Some(flag);
+        match self.db.get_videos(&filter) {
+            Ok(vids) => {
+                let paths: Vec<PathBuf> = vids.into_iter().map(|v| PathBuf::from(v.file_path)).collect();
+                if paths.is_empty() {
+                    self.status_bar_text = format!("No {:?} clips found in catalog.", flag);
+                } else {
+                    match ExternalLauncher::open_files_in_mlv_app(&self.db, self.config.mlv_app_path.as_ref(), &paths) {
+                        Ok(msg) => self.status_bar_text = format!("{:?}: {}", flag, msg),
+                        Err(e) => self.status_bar_text = e,
+                    }
+                }
+            }
+            Err(e) => self.status_bar_text = format!("Failed to query {:?} clips: {}", flag, e),
         }
     }
 
@@ -498,6 +577,129 @@ impl MlvExplorerApp {
         self.status_bar_text = format!("Pasted clip settings to {} selected clip(s).", count);
     }
 
+    /// Navigate from Player view back to Grid view cleanly (pauses audio, exits fullscreen, resets state)
+    pub fn navigate_to_grid(&mut self, ctx: &egui::Context) {
+        self.view_mode = ViewMode::Grid;
+        self.player_view.is_fullscreen = false;
+        self.player_view.is_playing = false;
+        if let Some((_, ref pb)) = self.current_playback {
+            if let Ok(mut a) = pb.audio.lock() {
+                a.pause();
+            }
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+        ctx.request_repaint();
+    }
+
+    /// Navigate from Grid view to Cinema Player view for current selected clip
+    pub fn navigate_to_player(&mut self, ctx: &egui::Context) {
+        if self.selected_video_idx.is_some() {
+            self.view_mode = ViewMode::Player;
+            self.ensure_playback(ctx);
+            ctx.request_repaint();
+        }
+    }
+
+    /// Hierarchical Go Back navigation:
+    /// 1. Close open modal dialogs
+    /// 2. If in Player view, return to Grid view
+    pub fn navigate_back(&mut self, ctx: &egui::Context) -> bool {
+        if self.keyword_dialog.is_open {
+            self.keyword_dialog.is_open = false;
+            return true;
+        }
+        if self.settings_dialog.is_open {
+            self.settings_dialog.is_open = false;
+            return true;
+        }
+        if self.delete_confirm_dialog.is_open {
+            self.delete_confirm_dialog.is_open = false;
+            return true;
+        }
+        if self.help_dialogs.show_shortcuts || self.help_dialogs.show_about || self.help_dialogs.show_updater {
+            self.help_dialogs.show_shortcuts = false;
+            self.help_dialogs.show_about = false;
+            self.help_dialogs.show_updater = false;
+            return true;
+        }
+        if self.ingest_dialog.is_open {
+            if !self.ingest_dialog.is_ingesting {
+                self.ingest_dialog.is_open = false;
+                return true;
+            }
+        }
+
+        if self.view_mode == ViewMode::Player {
+            self.navigate_to_grid(ctx);
+            return true;
+        }
+
+        false
+    }
+
+    /// Go Forward navigation:
+    /// If in Grid view and a clip is selected, navigate into Player view
+    pub fn navigate_forward(&mut self, ctx: &egui::Context) -> bool {
+        if self.view_mode == ViewMode::Grid && self.selected_video_idx.is_some() {
+            self.navigate_to_player(ctx);
+            return true;
+        }
+        false
+    }
+
+    /// Handle mouse side buttons (Back: Extra1, Forward: Extra2) and browser-style navigation keys (Alt+Left, Alt+Right, Esc)
+    fn handle_navigation_input(&mut self, ctx: &egui::Context) {
+        // 1. Mouse side buttons (Back: Extra1, Forward: Extra2)
+        // Checked unconditionally so mouse side clicks work even when a text field has focus.
+        let (mouse_back, mouse_forward) = ctx.input(|i| {
+            let back = i.pointer.button_pressed(egui::PointerButton::Extra1)
+                || i.raw.events.iter().any(|e| matches!(e, egui::Event::PointerButton { button: egui::PointerButton::Extra1, pressed: true, .. }));
+            let fwd = i.pointer.button_pressed(egui::PointerButton::Extra2)
+                || i.raw.events.iter().any(|e| matches!(e, egui::Event::PointerButton { button: egui::PointerButton::Extra2, pressed: true, .. }));
+            (back, fwd)
+        });
+
+        if mouse_back {
+            self.navigate_back(ctx);
+            return;
+        }
+
+        if mouse_forward {
+            self.navigate_forward(ctx);
+            return;
+        }
+
+        // 2. Keyboard Back / Forward navigation (Alt+Left, Alt+Right, Escape)
+        // Only handled when NOT typing into a text field.
+        if !ctx.wants_keyboard_input() {
+            let (alt_left, alt_right, escape) = ctx.input(|i| {
+                let left = i.modifiers.alt && i.key_pressed(egui::Key::ArrowLeft);
+                let right = i.modifiers.alt && i.key_pressed(egui::Key::ArrowRight);
+                let esc = i.key_pressed(egui::Key::Escape);
+                (left, right, esc)
+            });
+
+            if alt_left {
+                self.navigate_back(ctx);
+            } else if alt_right {
+                self.navigate_forward(ctx);
+            } else if escape {
+                // If any modal is open, Escape closes it
+                let has_modal = self.keyword_dialog.is_open
+                    || self.settings_dialog.is_open
+                    || self.delete_confirm_dialog.is_open
+                    || (self.ingest_dialog.is_open && !self.ingest_dialog.is_ingesting)
+                    || self.help_dialogs.show_shortcuts
+                    || self.help_dialogs.show_about
+                    || self.help_dialogs.show_updater;
+
+                if has_modal {
+                    self.navigate_back(ctx);
+                }
+            }
+        }
+    }
+
     /// Handle drag-and-drop file imports from OS
     fn handle_drag_and_drop(&mut self, ctx: &egui::Context) {
         let dropped_files = ctx.input(|i| i.raw.dropped_files.clone());
@@ -520,20 +722,10 @@ impl MlvExplorerApp {
 
         // Mode switching: G -> Grid, E / Enter -> Player, F -> Fullscreen Player
         if input.key_pressed(egui::Key::G) {
-            self.view_mode = ViewMode::Grid;
-            self.player_view.is_fullscreen = false;
-            self.player_view.is_playing = false;
-            if let Some((_, ref pb)) = self.current_playback {
-                if let Ok(mut a) = pb.audio.lock() {
-                    a.pause();
-                }
-            }
+            self.navigate_to_grid(ctx);
         }
         if input.key_pressed(egui::Key::E) || (self.view_mode == ViewMode::Grid && input.key_pressed(egui::Key::Enter)) {
-            if self.selected_video_idx.is_some() {
-                self.view_mode = ViewMode::Player;
-                self.ensure_playback(ctx);
-            }
+            self.navigate_to_player(ctx);
         }
         if input.key_pressed(egui::Key::F) {
             if self.view_mode == ViewMode::Grid {
@@ -568,6 +760,25 @@ impl MlvExplorerApp {
         // Ctrl+V / Cmd+V: Paste clip settings
         if (input.modifiers.command || input.modifiers.ctrl) && input.key_pressed(egui::Key::V) {
             self.paste_clip_settings();
+        }
+
+        // Ctrl+I / Cmd+I: Ingest from SD / Card
+        if (input.modifiers.command || input.modifiers.ctrl) && input.key_pressed(egui::Key::I) {
+            self.ingest_dialog.open(&self.config, &self.db, ctx);
+        }
+
+        // Ctrl+M / Cmd+M: Open selected clip(s) in MLV App
+        if (input.modifiers.command || input.modifiers.ctrl) && input.key_pressed(egui::Key::M) {
+            let targets = if !self.selected_indices.is_empty() {
+                self.selected_indices.clone()
+            } else if let Some(idx) = self.selected_video_idx {
+                vec![idx]
+            } else {
+                Vec::new()
+            };
+            if !targets.is_empty() {
+                self.open_selection_in_mlv_app(&targets);
+            }
         }
 
         // F1: Open shortcuts help
@@ -734,11 +945,13 @@ impl eframe::App for MlvExplorerApp {
         }
 
         self.handle_drag_and_drop(ctx);
+        self.handle_navigation_input(ctx);
         self.handle_keyboard_shortcuts(ctx);
 
         let has_modal_open = self.keyword_dialog.is_open
             || self.settings_dialog.is_open
             || self.delete_confirm_dialog.is_open
+            || self.ingest_dialog.is_open
             || self.help_dialogs.show_shortcuts
             || self.help_dialogs.show_about
             || self.help_dialogs.show_updater;
@@ -850,6 +1063,9 @@ impl eframe::App for MlvExplorerApp {
                             }
                         }
                     }
+                    TopBarAction::IngestFromCard => {
+                        self.ingest_dialog.open(&self.config, &self.db, ctx);
+                    }
                     TopBarAction::ImportFiles => {
                         if let Some(files) = rfd::FileDialog::new()
                             .add_filter("Magic Lantern RAW Video", &["mlv", "MLV"])
@@ -862,6 +1078,21 @@ impl eframe::App for MlvExplorerApp {
                         if let Some(folder) = rfd::FileDialog::new().pick_folder() {
                             self.start_import(vec![folder], ctx);
                         }
+                    }
+                    TopBarAction::OpenSelectedInMlvApp => {
+                        let targets = if !self.selected_indices.is_empty() {
+                            self.selected_indices.clone()
+                        } else if let Some(idx) = self.selected_video_idx {
+                            vec![idx]
+                        } else {
+                            Vec::new()
+                        };
+                        if !targets.is_empty() {
+                            self.open_selection_in_mlv_app(&targets);
+                        }
+                    }
+                    TopBarAction::OpenCatalogInMlvApp => {
+                        self.open_catalog_in_mlv_app();
                     }
                     TopBarAction::Exit => {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -914,13 +1145,10 @@ impl eframe::App for MlvExplorerApp {
 
                     // View
                     TopBarAction::SwitchToGrid => {
-                        self.view_mode = ViewMode::Grid;
+                        self.navigate_to_grid(ctx);
                     }
                     TopBarAction::SwitchToPlayer => {
-                        if self.selected_video_idx.is_some() {
-                            self.view_mode = ViewMode::Player;
-                            self.ensure_playback(ctx);
-                        }
+                        self.navigate_to_player(ctx);
                     }
                     TopBarAction::ToggleFullscreen => {
                         if self.view_mode == ViewMode::Player {
@@ -1053,11 +1281,20 @@ impl eframe::App for MlvExplorerApp {
                 .width_range(180.0..=320.0)
                 .show(ctx, |ui| {
                     let mut open_kw_mgr = false;
-                    if Navigator::show(ui, &mut self.filter, &self.facets, &self.db, &mut open_kw_mgr) {
-                        self.reload_catalog();
+                    let mut open_ingest = false;
+                    if let Some(nav_act) = Navigator::show(ui, &mut self.filter, &self.facets, &self.db, &mut open_kw_mgr, &mut open_ingest) {
+                        match nav_act {
+                            NavigatorAction::FilterChanged => self.reload_catalog(),
+                            NavigatorAction::OpenTagInMlvApp(tag) => self.open_tag_in_mlv_app(&tag),
+                            NavigatorAction::OpenCatalogInMlvApp => self.open_catalog_in_mlv_app(),
+                            NavigatorAction::OpenFlagInMlvApp(flag) => self.open_flag_in_mlv_app(flag),
+                        }
                     }
                     if open_kw_mgr {
                         self.keyword_dialog.open();
+                    }
+                    if open_ingest {
+                        self.ingest_dialog.open(&self.config, &self.db, ctx);
                     }
                 });
         }
@@ -1080,12 +1317,7 @@ impl eframe::App for MlvExplorerApp {
                     if let Some(act) = self.inspector.show(ui, sel_vid.as_deref_mut(), selected_count, &self.db, &self.facets) {
                         match act {
                             crate::ui::inspector::InspectorAction::OpenInMlvApp => {
-                                if let Some(idx) = self.selected_video_idx {
-                                    if let Some(vid) = self.videos.get(idx) {
-                                        let path = PathBuf::from(&vid.file_path);
-                                        self.open_in_mlv_app(&path);
-                                    }
-                                }
+                                self.open_selection_in_mlv_app(&sel_indices);
                             }
                             crate::ui::inspector::InspectorAction::BatchSetRating(rating) => {
                                 for &idx in &sel_indices {
@@ -1257,13 +1489,8 @@ impl eframe::App for MlvExplorerApp {
                                     let _ = self.db.set_rating(id, rating);
                                 }
                             }
-                            GridAction::OpenInMlvApp(idx) => {
-                                self.selected_video_idx = Some(idx);
-                                self.selected_indices = vec![idx];
-                                if let Some(vid) = self.videos.get(idx) {
-                                    let path = PathBuf::from(&vid.file_path);
-                                    self.open_in_mlv_app(&path);
-                                }
+                            GridAction::OpenInMlvApp(indices) => {
+                                self.open_selection_in_mlv_app(&indices);
                             }
                             GridAction::RequestRemoveFromCatalog(indices) => {
                                 self.prompt_delete(DeleteMode::RemoveFromCatalog, indices);
@@ -1305,14 +1532,7 @@ impl eframe::App for MlvExplorerApp {
                                     if let Some(act) = self.player_view.show(ui, vid, pb) {
                                         match act {
                                             PlayerAction::BackToGrid => {
-                                                self.view_mode = ViewMode::Grid;
-                                                self.player_view.is_fullscreen = false;
-                                                self.player_view.is_playing = false;
-                                                if let Ok(mut a) = pb.audio.lock() {
-                                                    a.pause();
-                                                }
-                                                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
-                                                ctx.request_repaint();
+                                                self.navigate_to_grid(ctx);
                                             }
                                             PlayerAction::Seek(frame) => {
                                                 pb.set_target(frame, self.player_view.is_looping);
@@ -1396,5 +1616,88 @@ impl eframe::App for MlvExplorerApp {
 
         // 9. Help & Shortcuts Modals
         self.help_dialogs.show(ctx, &mut self.update_manager);
+
+        // 10. SD / Card Ingestion Modal
+        if let Some(IngestDialogAction::Finished(count)) = self.ingest_dialog.show(ctx, &self.db, &mut self.config) {
+            if count > 0 {
+                self.status_bar_text = format!("Ingested {} clip(s) from card.", count);
+                self.reload_catalog();
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AppConfig;
+    use std::path::Path;
+
+    #[test]
+    fn test_navigation_hierarchy() {
+        let ctx = egui::Context::default();
+        let db = Database::open(Path::new(":memory:")).unwrap();
+        let thumb_mgr = ThumbnailManager::new(PathBuf::from(":memory:"), ctx.clone());
+        let (import_tx, import_rx) = crossbeam_channel::unbounded();
+
+        let mut app = MlvExplorerApp {
+            config: AppConfig::default(),
+            db,
+            view_mode: ViewMode::Grid,
+            videos: Vec::new(),
+            selected_video_idx: None,
+            selected_indices: Vec::new(),
+            filter: FilterCriteria::default(),
+            facets: Facets::default(),
+            all_tags: Vec::new(),
+            cameras: Vec::new(),
+            lenses: Vec::new(),
+            settings_clipboard: None,
+            thumb_mgr,
+            current_playback: None,
+            grid_view: GridView::default(),
+            player_view: PlayerView::default(),
+            inspector: Inspector::default(),
+            settings_dialog: SettingsDialog::default(),
+            delete_confirm_dialog: DeleteConfirmDialog::default(),
+            keyword_dialog: KeywordManagerDialog::default(),
+            ingest_dialog: IngestDialog::default(),
+            help_dialogs: HelpDialogs::default(),
+            update_manager: crate::updater::UpdateManager::default(),
+            import_tx,
+            import_rx,
+            import_progress: None,
+            import_cancel_flag: None,
+            gpu_info: String::new(),
+            status_bar_text: String::new(),
+        };
+
+        // Initially in Grid with no modals open, navigate_back returns false
+        assert_eq!(app.view_mode, ViewMode::Grid);
+        assert!(!app.navigate_back(&ctx));
+
+        // When a modal is open, navigate_back closes it and stays on Grid
+        app.keyword_dialog.is_open = true;
+        assert!(app.navigate_back(&ctx));
+        assert!(!app.keyword_dialog.is_open);
+        assert_eq!(app.view_mode, ViewMode::Grid);
+
+        // When in Player mode, navigate_back returns to Grid mode
+        app.view_mode = ViewMode::Player;
+        app.player_view.is_fullscreen = true;
+        app.player_view.is_playing = true;
+        assert!(app.navigate_back(&ctx));
+        assert_eq!(app.view_mode, ViewMode::Grid);
+        assert!(!app.player_view.is_fullscreen);
+        assert!(!app.player_view.is_playing);
+
+        // Forward navigation when video is selected
+        app.selected_video_idx = Some(0);
+        assert!(app.navigate_forward(&ctx));
+        assert_eq!(app.view_mode, ViewMode::Player);
+
+        // Back navigation returns to Grid
+        assert!(app.navigate_back(&ctx));
+        assert_eq!(app.view_mode, ViewMode::Grid);
     }
 }

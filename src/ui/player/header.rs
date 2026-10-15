@@ -26,7 +26,7 @@ impl HeaderBar {
             )
             .min_size(Vec2::new(0.0, CONTROL_HEIGHT));
 
-            if ui.add(back_btn).on_hover_text("Return to Grid [G]").clicked() {
+            if ui.add(back_btn).on_hover_text("Return to Grid [Mouse Back / Alt+Left / Esc / G]").clicked() {
                 action = Some(PlayerAction::BackToGrid);
             }
 

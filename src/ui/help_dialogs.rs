@@ -39,10 +39,12 @@ struct ShortcutItem {
 
 const SHORTCUTS: &[ShortcutItem] = &[
     // Navigation & Views
+    ShortcutItem { key: "Mouse Back / Alt + Left", context: "Player", desc: "Go Back from Player to Grid View" },
+    ShortcutItem { key: "Mouse Forward / Alt + Right", context: "Grid", desc: "Go Forward to Player View for Selected Clip" },
     ShortcutItem { key: "G", context: "Global", desc: "Switch to Contact Sheet Grid View" },
-    ShortcutItem { key: "E", context: "Global", desc: "Switch to Cinema Player View" },
+    ShortcutItem { key: "E / Enter", context: "Global", desc: "Switch to Cinema Player View" },
     ShortcutItem { key: "F", context: "Player", desc: "Toggle Borderless Cinema Fullscreen" },
-    ShortcutItem { key: "Esc", context: "Any", desc: "Exit Fullscreen / Return to Grid View" },
+    ShortcutItem { key: "Esc", context: "Any", desc: "Exit Fullscreen / Close Dialog / Return to Grid View" },
     
     // Player Controls
     ShortcutItem { key: "Space", context: "Player", desc: "Play / Pause playback" },
@@ -65,6 +67,8 @@ const SHORTCUTS: &[ShortcutItem] = &[
     ShortcutItem { key: "Ctrl + Click", context: "Grid", desc: "Toggle clip selection" },
 
     // Management
+    ShortcutItem { key: "Ctrl + M", context: "Grid / Player", desc: "Open Selected Clip(s) in MLV App Session" },
+    ShortcutItem { key: "Ctrl + I", context: "Global", desc: "Ingest Videos from SD / Card" },
     ShortcutItem { key: "Ctrl + O", context: "Global", desc: "Import .MLV Files" },
     ShortcutItem { key: "Ctrl + Shift + O", context: "Global", desc: "Import Directory of .MLV Files" },
     ShortcutItem { key: "Del / Backspace", context: "Grid", desc: "Remove selected clip(s) from Catalog" },

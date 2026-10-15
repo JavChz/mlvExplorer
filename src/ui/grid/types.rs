@@ -3,7 +3,7 @@ pub enum GridAction {
     OpenPlayer(usize),
     TogglePick(i64),
     SetRating(i64, u8),
-    OpenInMlvApp(usize),
+    OpenInMlvApp(Vec<usize>),
     RequestRemoveFromCatalog(Vec<usize>),
     RequestMoveToTrash(Vec<usize>),
     BoxSelect(Vec<usize>),

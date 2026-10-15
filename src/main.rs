@@ -4,6 +4,7 @@ pub mod config;
 pub mod db;
 pub mod gpu;
 pub mod importer;
+pub mod ingester;
 pub mod launcher;
 pub mod mlv;
 pub mod playback;

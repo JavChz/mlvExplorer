@@ -11,8 +11,11 @@ pub enum TopBarAction {
     ImportExistingCatalog,
     ExportCatalog,
     BackupCatalog,
+    IngestFromCard,
     ImportFiles,
     ImportFolder,
+    OpenSelectedInMlvApp,
+    OpenCatalogInMlvApp,
     Exit,
 
     // Edit
@@ -85,12 +88,27 @@ impl TopBar {
 
                     ui.separator();
 
+                    if ui.add(egui::Button::new(widgets::icon_label(icon::DOWNLOAD_SIMPLE, "Ingest from SD / Card...   [Ctrl+I]"))).clicked() {
+                        action = Some(TopBarAction::IngestFromCard);
+                        ui.close_menu();
+                    }
                     if ui.add(egui::Button::new(widgets::icon_label(icon::FILM_STRIP, "Import Video File(s)..."))).clicked() {
                         action = Some(TopBarAction::ImportFiles);
                         ui.close_menu();
                     }
                     if ui.add(egui::Button::new(widgets::icon_label(icon::FOLDER, "Import Videos from Folder..."))).clicked() {
                         action = Some(TopBarAction::ImportFolder);
+                        ui.close_menu();
+                    }
+
+                    ui.separator();
+
+                    if ui.add_enabled(can_open_player, egui::Button::new(widgets::icon_label(icon::ARROW_SQUARE_OUT, "Open Selected in MLV App   [Ctrl+M]"))).clicked() {
+                        action = Some(TopBarAction::OpenSelectedInMlvApp);
+                        ui.close_menu();
+                    }
+                    if ui.add(egui::Button::new(widgets::icon_label(icon::ARROW_SQUARE_OUT, "Open Catalog in MLV App..."))).clicked() {
+                        action = Some(TopBarAction::OpenCatalogInMlvApp);
                         ui.close_menu();
                     }
 
@@ -269,6 +287,21 @@ impl TopBar {
                 });
 
                 widgets::toolbar_divider(ui);
+
+                let ingest_btn = egui::Button::new(
+                    RichText::new(widgets::icon_label(icon::DOWNLOAD_SIMPLE, "Ingest Card"))
+                        .size(FONT_SMALL)
+                        .color(Color32::WHITE)
+                        .strong(),
+                )
+                .fill(ACCENT_HOVER)
+                .stroke(Stroke::NONE)
+                .rounding(Rounding::same(ROUNDING))
+                .min_size(Vec2::new(0.0, 22.0));
+
+                if ui.add(ingest_btn).on_hover_text("Ingest MLV files from SD/CF card into folder [Ctrl+I]").clicked() {
+                    action = Some(TopBarAction::IngestFromCard);
+                }
 
                 let import_file_btn = egui::Button::new(
                     RichText::new(widgets::icon_label(icon::FILE_PLUS, "Import Files"))

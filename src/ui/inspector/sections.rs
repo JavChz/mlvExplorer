@@ -8,7 +8,7 @@ use egui::{Rect, RichText, Rounding, Sense, Stroke, Ui, Vec2};
 pub struct OrganizationSection;
 
 impl OrganizationSection {
-    pub fn show(ui: &mut Ui, vid: &mut VideoRecord, db: &Database) -> Option<InspectorAction> {
+    pub fn show(ui: &mut Ui, vid: &mut VideoRecord, db: &Database, selected_count: usize) -> Option<InspectorAction> {
         let mut action = None;
 
         egui::Frame::none()
@@ -45,8 +45,18 @@ impl OrganizationSection {
                 });
 
                 ui.add_space(8.0);
+                let label = if selected_count > 1 {
+                    format!("Open in MLV App ({} clips)", selected_count)
+                } else {
+                    "Open in MLV App".to_string()
+                };
+                let tooltip = if selected_count > 1 {
+                    format!("Open all {} selected clips into a single MLV App session for batch grading and export", selected_count)
+                } else {
+                    "Open this clip in MLV App for grading and export".to_string()
+                };
                 let btn = egui::Button::new(
-                    RichText::new(widgets::icon_label(icon::ARROW_SQUARE_OUT, "Open in MLV App"))
+                    RichText::new(widgets::icon_label(icon::ARROW_SQUARE_OUT, &label))
                         .color(egui::Color32::WHITE)
                         .strong(),
                 )
@@ -55,7 +65,7 @@ impl OrganizationSection {
                 .min_size(Vec2::new(ui.available_width(), CONTROL_HEIGHT + 4.0));
                 if ui
                     .add(btn)
-                    .on_hover_text("Open this clip in MLV App for grading and export")
+                    .on_hover_text(tooltip)
                     .clicked()
                 {
                     action = Some(InspectorAction::OpenInMlvApp);

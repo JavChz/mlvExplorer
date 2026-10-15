@@ -49,8 +49,13 @@ impl Card {
                 action = Some(GridAction::OpenPlayer(index));
                 ui.close_menu();
             }
-            if ui.button(widgets::icon_label(icon::ARROW_SQUARE_OUT, "Open in MLV App")).clicked() {
-                action = Some(GridAction::OpenInMlvApp(index));
+            let mlv_app_label = if target_indices.len() > 1 {
+                format!("Open in MLV App ({} clips)", target_indices.len())
+            } else {
+                "Open in MLV App".to_string()
+            };
+            if ui.button(widgets::icon_label(icon::ARROW_SQUARE_OUT, &mlv_app_label)).clicked() {
+                action = Some(GridAction::OpenInMlvApp(target_indices.clone()));
                 ui.close_menu();
             }
             ui.separator();

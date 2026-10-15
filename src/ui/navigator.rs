@@ -3,6 +3,14 @@ use crate::ui::theme::*;
 use crate::ui::widgets::{self, icon};
 use egui::{Align2, Color32, FontId, Pos2, Rect, RichText, Rounding, Sense, Stroke, Ui, Vec2};
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum NavigatorAction {
+    FilterChanged,
+    OpenTagInMlvApp(String),
+    OpenCatalogInMlvApp,
+    OpenFlagInMlvApp(PickFlag),
+}
+
 pub struct Navigator;
 
 impl Navigator {
@@ -12,8 +20,9 @@ impl Navigator {
         facets: &Facets,
         db: &crate::db::Database,
         open_keyword_manager: &mut bool,
-    ) -> bool {
-        let mut changed = false;
+        open_ingest_dialog: &mut bool,
+    ) -> Option<NavigatorAction> {
+        let mut action = None;
 
         // Navigator title bar / header
         let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), TOOLBAR_HEIGHT), Sense::hover());
@@ -41,33 +50,76 @@ impl Navigator {
 
                         // All Clips
                         let is_all = filter.flag.is_none() && filter.camera.is_none() && filter.lens.is_none() && filter.tag.is_none();
-                        if Self::nav_item(ui, is_all, icon::FOLDER, "All Clips", facets.total, None, None) {
+                        let (clicked, resp) = Self::nav_item(ui, is_all, icon::FOLDER, "All Clips", facets.total, None, None);
+                        resp.context_menu(|ui| {
+                            if ui.button(widgets::icon_label(icon::ARROW_SQUARE_OUT, &format!("Open All Clips in MLV App ({} clips)", facets.total))).clicked() {
+                                action = Some(NavigatorAction::OpenCatalogInMlvApp);
+                                ui.close_menu();
+                            }
+                        });
+                        if clicked {
                             filter.flag = None;
                             filter.camera = None;
                             filter.lens = None;
                             filter.tag = None;
-                            changed = true;
+                            action = Some(NavigatorAction::FilterChanged);
                         }
 
                         // Flagged / Picks
                         let is_picked = filter.flag == Some(PickFlag::Picked);
-                        if Self::nav_item(ui, is_picked, icon::FLAG, "Picks", facets.picked, Some(FLAG_PICKED), Some(icon_fill_font(13.0))) {
+                        let (clicked, resp) = Self::nav_item(ui, is_picked, icon::FLAG, "Picks", facets.picked, Some(FLAG_PICKED), Some(icon_fill_font(13.0)));
+                        resp.context_menu(|ui| {
+                            if ui.button(widgets::icon_label(icon::ARROW_SQUARE_OUT, &format!("Open Picks in MLV App ({} clips)", facets.picked))).clicked() {
+                                action = Some(NavigatorAction::OpenFlagInMlvApp(PickFlag::Picked));
+                                ui.close_menu();
+                            }
+                        });
+                        if clicked {
                             filter.flag = if is_picked { None } else { Some(PickFlag::Picked) };
-                            changed = true;
+                            action = Some(NavigatorAction::FilterChanged);
                         }
 
                         // Rejected
                         let is_rejected = filter.flag == Some(PickFlag::Rejected);
-                        if Self::nav_item(ui, is_rejected, icon::X_CIRCLE, "Rejected", facets.rejected, Some(FLAG_REJECTED), Some(icon_fill_font(13.0))) {
+                        let (clicked, resp) = Self::nav_item(ui, is_rejected, icon::X_CIRCLE, "Rejected", facets.rejected, Some(FLAG_REJECTED), Some(icon_fill_font(13.0)));
+                        resp.context_menu(|ui| {
+                            if ui.button(widgets::icon_label(icon::ARROW_SQUARE_OUT, &format!("Open Rejected in MLV App ({} clips)", facets.rejected))).clicked() {
+                                action = Some(NavigatorAction::OpenFlagInMlvApp(PickFlag::Rejected));
+                                ui.close_menu();
+                            }
+                        });
+                        if clicked {
                             filter.flag = if is_rejected { None } else { Some(PickFlag::Rejected) };
-                            changed = true;
+                            action = Some(NavigatorAction::FilterChanged);
                         }
 
                         // Unflagged
                         let is_unflagged = filter.flag == Some(PickFlag::Unflagged);
-                        if Self::nav_item(ui, is_unflagged, icon::CIRCLE, "Unflagged", facets.unflagged, None, None) {
+                        let (clicked, resp) = Self::nav_item(ui, is_unflagged, icon::CIRCLE, "Unflagged", facets.unflagged, None, None);
+                        resp.context_menu(|ui| {
+                            if ui.button(widgets::icon_label(icon::ARROW_SQUARE_OUT, &format!("Open Unflagged in MLV App ({} clips)", facets.unflagged))).clicked() {
+                                action = Some(NavigatorAction::OpenFlagInMlvApp(PickFlag::Unflagged));
+                                ui.close_menu();
+                            }
+                        });
+                        if clicked {
                             filter.flag = if is_unflagged { None } else { Some(PickFlag::Unflagged) };
-                            changed = true;
+                            action = Some(NavigatorAction::FilterChanged);
+                        }
+
+                        ui.add_space(6.0);
+                        let ingest_btn = egui::Button::new(
+                            RichText::new(widgets::icon_label(icon::DOWNLOAD_SIMPLE, "Ingest from Card..."))
+                                .size(FONT_SMALL)
+                                .color(text_primary(ui)),
+                        )
+                        .fill(bg_card(ui))
+                        .stroke(Stroke::new(1.0_f32, border_subtle(ui)))
+                        .rounding(Rounding::same(ROUNDING))
+                        .min_size(Vec2::new(ui.available_width(), 22.0));
+
+                        if ui.add(ingest_btn).on_hover_text("Ingest MLV videos from SD/CF card into folder [Ctrl+I]").clicked() {
+                            *open_ingest_dialog = true;
                         }
                     });
 
@@ -81,9 +133,10 @@ impl Navigator {
                     }
                     for cam in &facets.cameras {
                         let is_sel = filter.camera.as_ref() == Some(&cam.name);
-                        if Self::nav_item(ui, is_sel, icon::CAMERA, &cam.name, cam.count, None, None) {
+                        let (clicked, _) = Self::nav_item(ui, is_sel, icon::CAMERA, &cam.name, cam.count, None, None);
+                        if clicked {
                             filter.camera = if is_sel { None } else { Some(cam.name.clone()) };
-                            changed = true;
+                            action = Some(NavigatorAction::FilterChanged);
                         }
                     }
                 });
@@ -96,9 +149,10 @@ impl Navigator {
                     }
                     for lens in &facets.lenses {
                         let is_sel = filter.lens.as_ref() == Some(&lens.name);
-                        if Self::nav_item(ui, is_sel, icon::APERTURE, &lens.name, lens.count, None, None) {
+                        let (clicked, _) = Self::nav_item(ui, is_sel, icon::APERTURE, &lens.name, lens.count, None, None);
+                        if clicked {
                             filter.lens = if is_sel { None } else { Some(lens.name.clone()) };
-                            changed = true;
+                            action = Some(NavigatorAction::FilterChanged);
                         }
                     }
                 });
@@ -145,7 +199,7 @@ impl Navigator {
                             let clean_name = new_kw_text.trim().to_string();
                             let _ = db.create_tag(&clean_name, new_kw_parent);
                             new_kw_text.clear();
-                            changed = true;
+                            action = Some(NavigatorAction::FilterChanged);
                             if is_enter {
                                 resp.request_focus();
                             }
@@ -188,7 +242,7 @@ impl Navigator {
                         ui.label(RichText::new("No keywords created").size(FONT_SMALL).color(text_hint(ui)));
                     } else {
                         for node in &facets.tag_tree {
-                            Self::render_keyword_tree_node(ui, node, filter, db, 0, &mut changed);
+                            Self::render_keyword_tree_node(ui, node, filter, db, 0, &mut action);
                         }
                     }
                 });
@@ -198,6 +252,7 @@ impl Navigator {
                     let shortcuts = [
                         ("G", "Grid View"),
                         ("E / Enter", "Player View"),
+                        ("Ctrl + M", "Open in MLV App"),
                         ("Space", "Play / Pause"),
                         ("Left / Right", "Step 1 Frame"),
                         ("Home / End", "First / Last Frame"),
@@ -223,7 +278,7 @@ impl Navigator {
                 ui.add_space(10.0);
             });
 
-        changed
+        action
     }
 
     /// Renders a consistent, professional studio row with icon, title, and right-aligned badge pill
@@ -235,7 +290,7 @@ impl Navigator {
         count: usize,
         glyph_color: Option<Color32>,
         custom_icon_font: Option<FontId>,
-    ) -> bool {
+    ) -> (bool, egui::Response) {
         let is_dark = ui.visuals().dark_mode;
         let is_disabled = count == 0 && !is_selected && label != "All Clips";
         let sense = if is_disabled { Sense::hover() } else { Sense::click() };
@@ -319,7 +374,8 @@ impl Navigator {
             text_col,
         );
 
-        !is_disabled && response.clicked()
+        let clicked = !is_disabled && response.clicked();
+        (clicked, response)
     }
 
     /// Renders a hierarchical keyword node like Lightroom:
@@ -327,6 +383,7 @@ impl Navigator {
     /// - Expand / collapse caret if node has children
     /// - Tag glyph + Keyword name
     /// - Aggregated count badge
+    /// - Right-click context menu (Open in MLV App, Filter, Add Child)
     /// - Hover arrow icon on the right to immediately filter the view to this keyword
     fn render_keyword_tree_node(
         ui: &mut Ui,
@@ -334,7 +391,7 @@ impl Navigator {
         filter: &mut FilterCriteria,
         db: &crate::db::Database,
         depth: usize,
-        changed: &mut bool,
+        action: &mut Option<NavigatorAction>,
     ) -> bool {
         let is_sel = filter.tag.as_ref() == Some(&node.name);
         let is_disabled = node.total_count == 0 && !is_sel;
@@ -353,6 +410,29 @@ impl Navigator {
         let row_height = 24.0;
         let sense = if is_disabled { Sense::hover() } else { Sense::click() };
         let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), sense);
+
+        // Right-click context menu for keyword node
+        response.context_menu(|ui| {
+            if ui.button(widgets::icon_label(icon::ARROW_SQUARE_OUT, &format!("Open in MLV App ({} clips)", node.total_count))).clicked() {
+                *action = Some(NavigatorAction::OpenTagInMlvApp(node.name.clone()));
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui.button(widgets::icon_label(icon::FUNNEL, &format!("Filter by '{}'", node.name))).clicked() {
+                filter.tag = Some(node.name.clone());
+                *action = Some(NavigatorAction::FilterChanged);
+                ui.close_menu();
+            }
+            if ui.button(widgets::icon_label(icon::PLUS, &format!("Add Child Keyword under '{}'", node.name))).clicked() {
+                active_child_parent = Some(node.id);
+                ui.data_mut(|d| {
+                    d.insert_temp(add_child_target_id, active_child_parent);
+                    d.insert_temp(add_child_text_id, String::new());
+                    d.insert_temp(add_child_focus_id, true);
+                });
+                ui.close_menu();
+            }
+        });
 
         // Right side: Plus (Add Child) button + Count badge + Filter Arrow button
         let center_y = rect.center().y;
@@ -516,7 +596,7 @@ impl Navigator {
             ui.data_mut(|d| d.insert_temp(add_child_target_id, active_child_parent));
         } else if !is_disabled && (arrow_resp.clicked() || response.clicked()) {
             filter.tag = if is_sel { None } else { Some(node.name.clone()) };
-            *changed = true;
+            *action = Some(NavigatorAction::FilterChanged);
         }
 
         // Text label in middle with safe elision
@@ -583,7 +663,7 @@ impl Navigator {
                     active_child_parent = None;
                     is_expanded = true;
                     ui.data_mut(|d| d.insert_temp(id, true));
-                    *changed = true;
+                    *action = Some(NavigatorAction::FilterChanged);
                 }
             });
 
@@ -597,7 +677,7 @@ impl Navigator {
         // Recursively render children if expanded
         if has_children && is_expanded {
             for child in &node.children {
-                Self::render_keyword_tree_node(ui, child, filter, db, depth + 1, changed);
+                Self::render_keyword_tree_node(ui, child, filter, db, depth + 1, action);
             }
         }
 
