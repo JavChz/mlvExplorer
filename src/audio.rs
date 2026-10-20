@@ -100,6 +100,10 @@ impl AudioEngine {
         }
     }
 
+    pub fn is_playing(&self) -> bool {
+        self.is_playing
+    }
+
     pub fn play(&mut self, current_time_sec: f32) {
         self.is_playing = true;
         if let Some(ref sink) = self.sink {
@@ -130,11 +134,20 @@ impl AudioEngine {
 
     pub fn seek(&mut self, time_sec: f32, continue_playing: bool) {
         self.current_time_sec = time_sec.max(0.0);
-        let Some(meta) = self.meta.clone() else { return };
-        if self.samples.is_empty() { return; }
+        let Some(meta) = self.meta.clone() else {
+            self.is_playing = false;
+            return;
+        };
+        if self.samples.is_empty() {
+            self.is_playing = false;
+            return;
+        }
 
         self.init_sink();
-        let Some(ref sink) = self.sink else { return };
+        let Some(ref sink) = self.sink else {
+            self.is_playing = false;
+            return;
+        };
 
         let channels = meta.channels.max(1) as usize;
         let sample_rate = meta.sample_rate.max(8000);
@@ -146,10 +159,14 @@ impl AudioEngine {
             let source = SamplesBuffer::new(meta.channels, meta.sample_rate, slice);
             sink.append(source);
             if continue_playing {
+                self.is_playing = true;
                 sink.play();
             } else {
+                self.is_playing = false;
                 sink.pause();
             }
+        } else {
+            self.is_playing = false;
         }
     }
 
@@ -162,7 +179,7 @@ impl AudioEngine {
     }
 
     pub fn is_finished(&self) -> bool {
-        self.sink.as_ref().map(|s| s.empty()).unwrap_or(false)
+        self.is_playing && self.sink.as_ref().map(|s| s.empty()).unwrap_or(false)
     }
 }
 
@@ -197,5 +214,9 @@ mod tests {
 
         engine.set_speed(1.5);
         assert_eq!(engine.speed, 1.5);
+
+        // Upon loading, audio must NOT be reported as playing or finished
+        assert!(!engine.is_playing());
+        assert!(!engine.is_finished());
     }
 }

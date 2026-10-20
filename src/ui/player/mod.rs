@@ -28,7 +28,13 @@ impl PlayerView {
 
         // Notify playback engine of target frame for read-ahead and poll async audio upload
         if let Some(pb) = playback {
-            pb.update_audio();
+            let newly_loaded = pb.update_audio();
+            if newly_loaded && self.is_playing {
+                let time_sec = self.current_frame as f32 / video.fps.max(1.0);
+                if let Ok(mut a) = pb.audio.lock() {
+                    a.play(time_sec);
+                }
+            }
             pb.set_target(self.current_frame, self.is_looping);
         }
 
@@ -167,44 +173,43 @@ impl PlayerView {
         let frame_duration = std::time::Duration::from_secs_f32(1.0 / effective_fps);
 
         if self.is_playing && playback.is_some() {
-            let has_audio = playback.and_then(|p| p.audio.lock().ok()).map(|a| a.has_audio()).unwrap_or(false);
-            if has_audio {
-                let mut should_loop = false;
-                let mut should_stop = false;
+            let mut audio_synced = false;
 
-                if let Some(pb) = playback {
-                    if let Ok(mut a) = pb.audio.lock() {
+            if let Some(pb) = playback {
+                if let Ok(mut a) = pb.audio.lock() {
+                    if a.has_audio() {
                         a.set_speed(self.playback_speed);
 
-                        if a.is_finished() {
-                            if self.is_looping {
-                                should_loop = true;
-                            } else {
-                                should_stop = true;
-                            }
-                        } else if let Some(audio_time) = a.current_playback_time() {
-                            let target_frame = (audio_time * video.fps).floor() as usize;
-                            if target_frame >= total_frames {
-                                if self.is_looping {
-                                    should_loop = true;
-                                } else {
-                                    should_stop = true;
-                                }
-                            } else {
-                                self.current_frame = target_frame;
-                            }
+                        // If video is playing but audio engine hasn't started yet, start it synchronized to current frame
+                        if !a.is_playing() {
+                            let time_sec = self.current_frame as f32 / video.fps.max(1.0);
+                            a.play(time_sec);
                         }
 
-                        if should_loop {
-                            self.current_frame = 0;
-                            a.seek(0.0, true);
-                        } else if should_stop {
-                            self.is_playing = false;
-                            a.pause();
+                        if a.is_playing() {
+                            if let Some(audio_time) = a.current_playback_time() {
+                                let target_frame = (audio_time * video.fps).floor() as usize;
+                                if target_frame >= total_frames {
+                                    if self.is_looping {
+                                        self.current_frame = 0;
+                                        a.seek(0.0, true);
+                                    } else {
+                                        self.current_frame = total_frames.saturating_sub(1);
+                                        self.is_playing = false;
+                                        a.pause();
+                                    }
+                                } else {
+                                    self.current_frame = target_frame;
+                                }
+                                audio_synced = true;
+                            }
                         }
                     }
                 }
-            } else {
+            }
+
+            // Fallback to high-precision wall-clock timer if audio is absent, still loading, or not active
+            if !audio_synced {
                 let elapsed = self.last_frame_time.elapsed();
                 if elapsed >= frame_duration {
                     self.last_frame_time = Instant::now();
@@ -212,6 +217,13 @@ impl PlayerView {
                         self.current_frame += 1;
                     } else if self.is_looping {
                         self.current_frame = 0;
+                        if let Some(pb) = playback {
+                            if let Ok(mut a) = pb.audio.lock() {
+                                if a.has_audio() {
+                                    a.seek(0.0, true);
+                                }
+                            }
+                        }
                     } else {
                         self.is_playing = false;
                     }

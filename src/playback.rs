@@ -91,18 +91,22 @@ impl Playback {
         }
     }
 
-    /// Poll asynchronous audio extraction and upload PCM samples into audio engine
-    pub fn update_audio(&self) {
+    /// Poll asynchronous audio extraction and upload PCM samples into audio engine.
+    /// Returns true if audio was freshly loaded on this call.
+    pub fn update_audio(&self) -> bool {
         let mut rx_guard = self.audio_rx.lock().unwrap();
         if let Some(ref rx) = *rx_guard {
             match rx.try_recv() {
                 Ok(audio_opt) => {
+                    let mut loaded = false;
                     if let Some((meta, samples)) = audio_opt {
                         if let Ok(mut engine) = self.audio.lock() {
                             engine.load(meta, samples);
+                            loaded = true;
                         }
                     }
                     *rx_guard = None; // Finished loading audio
+                    return loaded;
                 }
                 Err(crossbeam_channel::TryRecvError::Disconnected) => {
                     *rx_guard = None;
@@ -110,6 +114,7 @@ impl Playback {
                 Err(crossbeam_channel::TryRecvError::Empty) => {}
             }
         }
+        false
     }
 
     pub fn new(source: Arc<FrameSource>, ctx: egui::Context) -> Self {
