@@ -61,6 +61,8 @@ pub struct VideoRecord {
     pub location: Option<String>,
     #[serde(default)]
     pub camera_unit: Option<String>,
+    #[serde(default)]
+    pub rotation: u16,
     pub tags: Vec<String>,
 }
 

@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["mlvExplorer Contributors"]
 description = "Video browser-style catalog, player, and organizer for Magic Lantern RAW Videos (.mlv)"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/javch/mlvExplorer"
+repository = "https://github.com/JavChz/mlvExplorer"
 default-run = "mlv-explorer"
 
 [dependencies]

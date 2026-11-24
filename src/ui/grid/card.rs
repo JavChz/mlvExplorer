@@ -58,6 +58,16 @@ impl Card {
                 action = Some(GridAction::OpenInMlvApp(target_indices.clone()));
                 ui.close_menu();
             }
+            if ui
+                .button(widgets::icon_label(
+                    icon::FOLDER_OPEN,
+                    crate::launcher::ExternalLauncher::reveal_label(),
+                ))
+                .clicked()
+            {
+                action = Some(GridAction::ShowInExplorer(index));
+                ui.close_menu();
+            }
             ui.separator();
             let (pick_icon, pick_text) = if vid.flag == PickFlag::Picked {
                 (icon::X, "Remove Pick Flag")
@@ -118,13 +128,15 @@ impl Card {
         let thumb_tex = thumb_mgr.get_or_request(vid.id, &vid.file_path);
 
         if let Some(tex) = thumb_tex {
-            // Calculate display rect respecting anamorphic de-squeeze
+            // Calculate display rect respecting anamorphic de-squeeze & rotation
             let stretch = if vid.stretch_factor > 0.05 { vid.stretch_factor } else { 1.0 };
-            let video_ar = if vid.height > 0 {
-                (vid.width as f32 * stretch) / vid.height as f32
+            let rot = vid.rotation % 360;
+            let (eff_w, eff_h) = if rot == 90 || rot == 270 {
+                (vid.height as f32, vid.width as f32 * stretch)
             } else {
-                16.0 / 9.0
+                (vid.width as f32 * stretch, vid.height as f32)
             };
+            let video_ar = if eff_h > 0.0 { eff_w / eff_h } else { 16.0 / 9.0 };
 
             let mut fit_w = thumb_rect.width();
             let mut fit_h = fit_w / video_ar;
@@ -137,13 +149,47 @@ impl Card {
             // Letterbox background
             painter.rect_filled(thumb_rect, Rounding::same(ROUNDING), BG_THUMB);
 
-            // Paint thumbnail
-            painter.image(
-                tex.id(),
-                fitted_rect,
-                Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
-                Color32::WHITE,
-            );
+            // Paint thumbnail (with optional 90-deg rotation)
+            if rot == 0 {
+                painter.image(
+                    tex.id(),
+                    fitted_rect,
+                    Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            } else {
+                let uvs = match rot {
+                    90 => [
+                        Pos2::new(0.0, 1.0),
+                        Pos2::new(0.0, 0.0),
+                        Pos2::new(1.0, 0.0),
+                        Pos2::new(1.0, 1.0),
+                    ],
+                    180 => [
+                        Pos2::new(1.0, 1.0),
+                        Pos2::new(0.0, 1.0),
+                        Pos2::new(0.0, 0.0),
+                        Pos2::new(1.0, 0.0),
+                    ],
+                    _ => [
+                        Pos2::new(1.0, 0.0),
+                        Pos2::new(1.0, 1.0),
+                        Pos2::new(0.0, 1.0),
+                        Pos2::new(0.0, 0.0),
+                    ],
+                };
+                let mut mesh = egui::Mesh::with_texture(tex.id());
+                mesh.colored_vertex(fitted_rect.left_top(), Color32::WHITE);
+                mesh.colored_vertex(fitted_rect.right_top(), Color32::WHITE);
+                mesh.colored_vertex(fitted_rect.right_bottom(), Color32::WHITE);
+                mesh.colored_vertex(fitted_rect.left_bottom(), Color32::WHITE);
+                for (v, uv) in mesh.vertices.iter_mut().zip(uvs.iter()) {
+                    v.uv = *uv;
+                }
+                mesh.add_triangle(0, 1, 2);
+                mesh.add_triangle(0, 2, 3);
+                painter.add(egui::Shape::mesh(mesh));
+            }
         } else {
             painter.rect_filled(thumb_rect, Rounding::same(ROUNDING), BG_FIELD);
             painter.text(

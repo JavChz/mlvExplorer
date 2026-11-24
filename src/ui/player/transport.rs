@@ -1,11 +1,10 @@
 use super::types::{PlayerAction, PlayerView};
 use crate::db::VideoRecord;
-use crate::playback::Playback;
+use crate::playback::{Playback, PlaybackSnapshot};
 use crate::ui::playbar::Playbar;
 use crate::ui::theme::*;
 use crate::ui::widgets::{self, icon};
 use egui::{Color32, RichText, Rounding, Stroke, Ui, Vec2};
-use std::time::Instant;
 
 pub struct TransportBar;
 
@@ -15,6 +14,7 @@ impl TransportBar {
         ui: &mut Ui,
         video: &VideoRecord,
         playback: Option<&Playback>,
+        snapshot: Option<&PlaybackSnapshot>,
         total_frames: usize,
     ) -> Option<PlayerAction> {
         let mut action = None;
@@ -24,16 +24,20 @@ impl TransportBar {
             .inner_margin(egui::Margin::symmetric(8.0, 4.0))
             .show(ui, |ui| {
                 // A. Scrubber Playbar
-                let cached_frames = playback.map(|p| p.cached_frames()).unwrap_or_default();
+                let cached_ranges = snapshot.map(|s| s.cached_ranges.as_slice()).unwrap_or(&[]);
+                let loop_range = view.active_loop_range(total_frames);
                 if let Some(new_frame) = Playbar::show(
                     ui,
                     "player_main_playbar",
                     view.current_frame,
                     total_frames,
                     video.fps,
-                    &cached_frames,
+                    cached_ranges,
+                    loop_range,
                 ) {
                     view.current_frame = new_frame;
+                    view.clear_buffering();
+                    view.reanchor_clock();
                     action = Some(PlayerAction::Seek(view.current_frame));
                 }
 
@@ -74,6 +78,7 @@ impl TransportBar {
                     // Jump to Start
                     if widgets::icon_button(ui, icon::SKIP_BACK, false, "Jump to Start [Home]").clicked() {
                         view.current_frame = 0;
+                        view.reanchor_clock();
                         action = Some(PlayerAction::Seek(0));
                     }
 
@@ -81,13 +86,14 @@ impl TransportBar {
                     if widgets::icon_button(ui, icon::CARET_LEFT, false, "Step -1 Frame [Left Arrow]").clicked() {
                         if view.current_frame > 0 {
                             view.current_frame -= 1;
+                            view.reanchor_clock();
                             action = Some(PlayerAction::Seek(view.current_frame));
                         }
                     }
 
                     // PLAY / PAUSE (Main Button)
                     let play_glyph = if view.is_playing { icon::PAUSE } else { icon::PLAY };
-                    let play_tip = if view.is_playing { "Pause [Space]" } else { "Play [Space]" };
+                    let play_tip = if view.is_playing { "Pause [Space / K]" } else { "Play [Space / L]" };
                     let play_btn = egui::Button::new(
                         RichText::new(play_glyph)
                             .size(15.0)
@@ -101,10 +107,12 @@ impl TransportBar {
                     let can_play = playback.is_some();
                     if ui.add_enabled(can_play, play_btn).on_hover_text(play_tip).clicked() {
                         view.is_playing = !view.is_playing;
-                        view.last_frame_time = Instant::now();
+                        view.reverse_shuttle = false;
+                        view.clear_buffering();
                         if view.is_playing && view.current_frame + 1 >= total_frames {
                             view.current_frame = 0;
                         }
+                        view.reanchor_clock();
                         let time_sec = view.current_frame as f32 / video.fps.max(1.0);
                         if let Some(pb) = playback {
                             if let Ok(mut a) = pb.audio.lock() {
@@ -121,6 +129,7 @@ impl TransportBar {
                     if widgets::icon_button(ui, icon::CARET_RIGHT, false, "Step +1 Frame [Right Arrow]").clicked() {
                         if view.current_frame + 1 < total_frames {
                             view.current_frame += 1;
+                            view.reanchor_clock();
                             action = Some(PlayerAction::Seek(view.current_frame));
                         }
                     }
@@ -128,14 +137,38 @@ impl TransportBar {
                     // Jump to End
                     if widgets::icon_button(ui, icon::SKIP_FORWARD, false, "Jump to End [End]").clicked() {
                         view.current_frame = total_frames.saturating_sub(1);
+                        view.reanchor_clock();
                         action = Some(PlayerAction::Seek(view.current_frame));
                     }
 
                     widgets::toolbar_divider(ui);
 
                     // Loop Toggle
-                    if widgets::icon_button(ui, icon::REPEAT, view.is_looping, "Toggle Loop").clicked() {
+                    if widgets::icon_button(ui, icon::REPEAT, view.is_looping, "Toggle Loop Playback").clicked() {
                         view.is_looping = !view.is_looping;
+                    }
+
+                    // In/Out loop range badge (when active)
+                    if let Some((in_f, out_f)) = loop_range {
+                        let io_btn = egui::Button::new(
+                            RichText::new(format!("I/O {}–{}", in_f + 1, out_f + 1))
+                                .monospace()
+                                .size(FONT_CAPTION)
+                                .color(WARNING),
+                        )
+                        .fill(bg_field(ui))
+                        .stroke(Stroke::new(1.0_f32, WARNING.gamma_multiply(0.6)))
+                        .rounding(Rounding::same(ROUNDING))
+                        .min_size(Vec2::new(0.0, CONTROL_HEIGHT));
+                        if ui
+                            .add(io_btn)
+                            .on_hover_text("Active In/Out loop range ([I] Set In, [O] Set Out). Click or press [Alt+X] to clear.")
+                            .clicked()
+                        {
+                            view.loop_in = None;
+                            view.loop_out = None;
+                            view.trigger_status_cue("Loop In/Out Cleared");
+                        }
                     }
 
                     widgets::toolbar_divider(ui);
@@ -144,14 +177,27 @@ impl TransportBar {
                     ui.label(RichText::new("Speed:").size(FONT_SMALL).color(text_muted(ui)));
                     for spd in [0.5, 1.0, 2.0, 4.0] {
                         let is_active = (view.playback_speed - spd).abs() < 0.05;
-                        if widgets::toggle_button(ui, is_active, format!("{}x", spd)).clicked() {
+                        let tip = if view.reverse_shuttle && is_active {
+                            format!("Reverse shuttle at {}x [J/K/L]", spd)
+                        } else {
+                            format!("Set playback speed to {}x [J/K/L shuttle]", spd)
+                        };
+                        if widgets::toggle_button(ui, is_active, format!("{}x", spd))
+                            .on_hover_text(tip)
+                            .clicked()
+                        {
                             view.playback_speed = spd;
+                            view.reanchor_clock();
                             if let Some(pb) = playback {
                                 if let Ok(mut a) = pb.audio.lock() {
                                     a.set_speed(spd);
                                 }
                             }
                         }
+                    }
+
+                    if view.reverse_shuttle && view.is_playing {
+                        ui.label(RichText::new("REV").monospace().strong().size(FONT_CAPTION).color(WARNING));
                     }
 
                     widgets::toolbar_divider(ui);
@@ -167,7 +213,7 @@ impl TransportBar {
                             icon::SPEAKER_HIGH
                         };
 
-                        if widgets::icon_button(ui, mute_glyph, view.is_muted, "Toggle Audio Mute").clicked() {
+                        if widgets::icon_button(ui, mute_glyph, view.is_muted, "Toggle Audio Mute [M]").clicked() {
                             view.is_muted = !view.is_muted;
                             if let Some(pb) = playback {
                                 if let Ok(mut a) = pb.audio.lock() {

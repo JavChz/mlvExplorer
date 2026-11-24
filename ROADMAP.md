@@ -1,3 +1,7 @@
+## Bugs
+
+- [] Regenerate thumbnails crashes the app
+
 ## Ingestion module [COMPLETED]
 
 - [x] Lightroom-style ingestion wizard modal (`Ctrl+I`, File Menu, Top Bar, and Navigator sidebar).
@@ -21,7 +25,7 @@
 Bug: For the filters, if I click a camera, remove the lenses tags that are no longer available for the clips in the filter, and viceversa. So only possible convinations are listed. Plus in the filter row to show "clear all filters" button, and the raiting filter be a dropdown, rather than buttons, and remove the sort from the filter row. And make sure the row for filters it's inside the box of the clkips, right now it's outside, shoudl so Search should be in nexty to library rather than up`.
 
 ## Integration with MLVApp [COMPLETED]
- 
+
 - [x] Single-session batch launching: MLV App CLI only takes one file argument in standard mode, so mlvExplorer generates an on-the-fly MLV App Session XML file (`.masxml`) and passes it to MLV App. All selected clips open together in a single MLV App window and playlist.
 - [x] Multi-clip selection support: Right-click card context menu opens all selected clips in one MLV App session (`Open in MLV App (N clips)`).
 - [x] Inspector integration: Metadata Inspector's "Open in MLV App" button dynamically updates with selection count and opens all selected clips together.

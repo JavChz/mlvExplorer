@@ -4,6 +4,7 @@ pub enum GridAction {
     TogglePick(i64),
     SetRating(i64, u8),
     OpenInMlvApp(Vec<usize>),
+    ShowInExplorer(usize),
     RequestRemoveFromCatalog(Vec<usize>),
     RequestMoveToTrash(Vec<usize>),
     BoxSelect(Vec<usize>),
@@ -17,6 +18,8 @@ pub struct GridView {
     pub drag_start_pos: Option<egui::Pos2>,
     pub drag_current_pos: Option<egui::Pos2>,
     pub scrollbar_tooltip_rect: Option<egui::Rect>,
+    pub last_columns: usize,
+    pub scroll_to_index: Option<usize>,
 }
 
 impl Default for GridView {
@@ -27,6 +30,8 @@ impl Default for GridView {
             drag_start_pos: None,
             drag_current_pos: None,
             scrollbar_tooltip_rect: None,
+            last_columns: 4,
+            scroll_to_index: None,
         }
     }
 }

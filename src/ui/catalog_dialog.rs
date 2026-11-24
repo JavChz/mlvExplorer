@@ -9,6 +9,8 @@ use std::path::PathBuf;
 pub enum SettingsAction {
     CatalogChanged,
     SwitchCatalog(PathBuf),
+    RebuildThumbnails,
+    CheckForUpdates,
 }
 
 pub struct SettingsDialog {
@@ -247,6 +249,21 @@ impl SettingsDialog {
                                         }
                                     }
                                 });
+
+                                ui.add_space(4.0);
+                                let rebuild_btn = egui::Button::new(
+                                    RichText::new(widgets::icon_label(icon::ARROWS_CLOCKWISE, "Rebuild All Thumbnails…"))
+                                        .size(FONT_SMALL),
+                                )
+                                .min_size(Vec2::new(ui.available_width(), CONTROL_HEIGHT + 2.0));
+                                if ui
+                                    .add(rebuild_btn)
+                                    .on_hover_text("Clear cached JPEG thumbnails and regenerate all clips at higher sharpness with focus pixel removal")
+                                    .clicked()
+                                {
+                                    self.status_message = Some(("Regenerating catalog thumbnails…".to_string(), false));
+                                    action = Some(SettingsAction::RebuildThumbnails);
+                                }
                             },
                         );
 
@@ -538,6 +555,98 @@ impl SettingsDialog {
                                         }
                                     }
                                 });
+                            },
+                        );
+
+                        // ========================================================
+                        // 5. FOCUS PIXEL MAPS (.FPM) DIRECTORY
+                        // ========================================================
+                        Self::settings_card(
+                            ui,
+                            icon::APERTURE,
+                            "Focus Pixel Maps (.fpm)",
+                            "Optional MLVApp-compatible .fpm maps for exact PDAF removal. Auto mode also heals focus dots directly on the GPU.",
+                            |ui| {
+                                let maps_dir = crate::mlv::pixel_maps_dir();
+                                let maps_str = maps_dir.to_string_lossy().to_string();
+                                let btn_open_w = 100.0;
+                                let spacing = ui.spacing().item_spacing.x;
+                                let frame_outer_w = (ui.available_width() - btn_open_w - spacing).max(100.0);
+                                let h_pad = 8.0;
+                                let frame_inner_w = (frame_outer_w - (h_pad * 2.0)).max(50.0);
+
+                                ui.horizontal(|ui| {
+                                    egui::Frame::none()
+                                        .fill(bg_field(ui))
+                                        .stroke(Stroke::new(1.0_f32, border_subtle(ui)))
+                                        .rounding(Rounding::same(ROUNDING + 1.0))
+                                        .inner_margin(egui::Margin::symmetric(h_pad, 4.0))
+                                        .show(ui, |ui| {
+                                            ui.set_max_width(frame_inner_w);
+                                            ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(&maps_str)
+                                                        .size(FONT_SMALL)
+                                                        .monospace()
+                                                        .color(text_primary(ui)),
+                                                )
+                                                .truncate(),
+                                            )
+                                            .on_hover_text(&maps_str);
+                                        });
+
+                                    if ui
+                                        .add(
+                                            egui::Button::new(
+                                                RichText::new(widgets::icon_label(icon::FOLDER_OPEN, "Open Folder"))
+                                                    .size(FONT_SMALL),
+                                            )
+                                            .min_size(Vec2::new(btn_open_w, CONTROL_HEIGHT + 2.0)),
+                                        )
+                                        .on_hover_text("Drop .fpm focus pixel maps here (MLV App's pixel_maps folder is also checked automatically)")
+                                        .clicked()
+                                    {
+                                        let _ = open::that(&maps_dir);
+                                    }
+                                });
+                            },
+                        );
+
+                        // ========================================================
+                        // 6. SOFTWARE UPDATES
+                        // ========================================================
+                        Self::settings_card(
+                            ui,
+                            icon::ARROWS_CLOCKWISE,
+                            "Software Updates",
+                            "Automatically checks GitHub Releases and matches installer or portable packages to how MLV Explorer is installed.",
+                            |ui| {
+                                let edition = crate::updater::detect_install_kind().label();
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "Current: v{} ({} edition)",
+                                            env!("CARGO_PKG_VERSION"),
+                                            edition
+                                        ))
+                                        .size(FONT_SMALL)
+                                        .color(text_secondary(ui)),
+                                    );
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        if widgets::button(ui, "Check Now").clicked() {
+                                            action = Some(SettingsAction::CheckForUpdates);
+                                        }
+                                    });
+                                });
+                                if ui
+                                    .checkbox(
+                                        &mut config.auto_check_updates,
+                                        "Automatically check for updates on startup",
+                                    )
+                                    .changed()
+                                {
+                                    config.save();
+                                }
                             },
                         );
 

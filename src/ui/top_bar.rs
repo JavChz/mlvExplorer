@@ -314,7 +314,7 @@ impl TopBar {
                 .rounding(Rounding::same(ROUNDING))
                 .min_size(Vec2::new(0.0, 22.0));
 
-                if ui.add(import_file_btn).clicked() {
+                if ui.add(import_file_btn).on_hover_text("Import .MLV files into the active catalog [Ctrl+O]").clicked() {
                     action = Some(TopBarAction::ImportFiles);
                 }
 
@@ -328,7 +328,7 @@ impl TopBar {
                 .rounding(Rounding::same(ROUNDING))
                 .min_size(Vec2::new(0.0, 22.0));
 
-                if ui.add(import_folder_btn).clicked() {
+                if ui.add(import_folder_btn).on_hover_text("Recursively import all .MLV files from a directory [Ctrl+Shift+O]").clicked() {
                     action = Some(TopBarAction::ImportFolder);
                 }
             });
@@ -435,7 +435,7 @@ impl TopBar {
                         .rounding(Rounding::same(ROUNDING))
                         .min_size(Vec2::new(32.0, 24.0));
 
-                        if ui.add(all_btn).clicked() {
+                        if ui.add(all_btn).on_hover_text("Show all clips regardless of flag").clicked() {
                             filter.flag = None;
                             filter_changed = true;
                         }

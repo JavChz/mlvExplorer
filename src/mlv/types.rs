@@ -31,6 +31,8 @@ pub struct MlvMetadata {
     // Camera & lens
     pub camera_name: String,
     pub camera_serial: String,
+    #[serde(default)]
+    pub camera_model_id: u32,
     pub lens_name: String,
     pub focal_length_mm: u16,
     pub aperture_fstop: f32,
@@ -40,6 +42,26 @@ pub struct MlvMetadata {
     pub date_recorded: Option<String>,
     pub binning_x: u16,
     pub binning_y: u16,
+    #[serde(default)]
+    pub skipping_x: u16,
+    #[serde(default)]
+    pub skipping_y: u16,
+    #[serde(default)]
+    pub sensor_res_x: u16,
+    #[serde(default)]
+    pub sensor_res_y: u16,
+    #[serde(default)]
+    pub sensor_crop: u16,
+    #[serde(default)]
+    pub active_area: [i32; 4],
+    #[serde(default)]
+    pub crop_x: u16,
+    #[serde(default)]
+    pub crop_y: u16,
+    #[serde(default)]
+    pub pan_x: u16,
+    #[serde(default)]
+    pub pan_y: u16,
     pub pixel_aspect_ratio: f32,
     /// Indicates whether clip utilizes 5D3 card spanning (multiple chunk files written in parallel)
     pub is_dual_card: bool,
@@ -121,17 +143,21 @@ impl MlvMetadata {
             return 1.0;
         }
 
-        // 3. Explicit RAWC block indicating asymmetric sensor binning (e.g. 1x3 or 3x1 on narrow crop):
-        if self.binning_x > 0 && self.binning_y > 0 && self.binning_x != self.binning_y {
-            let max_bin = self.binning_x.max(self.binning_y) as f32;
-            let min_bin = self.binning_x.min(self.binning_y) as f32;
-            let ratio = max_bin / min_bin.max(1.0);
+        // 3. Explicit RAWC block indicating asymmetric sensor subsampling (binning + skipping):
+        let step_x = (self.binning_x + self.skipping_x).max(self.binning_x) as f32;
+        let step_y = (self.binning_y + self.skipping_y).max(self.binning_y) as f32;
+        if step_x > 0.0 && step_y > 0.0 && (step_x - step_y).abs() > 0.1 {
+            let max_step = step_x.max(step_y);
+            let min_step = step_x.min(step_y).max(1.0);
+            let ratio = max_step / min_step;
             if (ratio - 3.0).abs() < 0.25 {
                 return 3.0; // 1x3 or 3x1 anamorphic crop mode
             } else if (ratio - 2.0).abs() < 0.2 {
                 return 2.0;
             } else if (ratio - 1.5).abs() < 0.15 {
                 return 1.5;
+            } else if (ratio - 1.333).abs() < 0.12 {
+                return 1.333;
             }
         }
 
@@ -231,6 +257,33 @@ mod tests {
         meta2.height = 1080;
         meta2.pixel_aspect_ratio = 2.0;
         assert_eq!(meta2.default_stretch(), 2.0);
+    }
+
+    #[test]
+    fn test_default_stretch_rawc_binning_plus_skipping() {
+        // 3x3 symmetric readout (bin_x=3, skip_x=0; bin_y=1, skip_y=2) -> step_x=3, step_y=3 -> 1.0
+        let mut meta = MlvMetadata::default();
+        meta.width = 1080;
+        meta.height = 1080;
+        meta.binning_x = 3;
+        meta.skipping_x = 0;
+        meta.binning_y = 1;
+        meta.skipping_y = 2;
+        assert_eq!(meta.default_stretch(), 1.0);
+
+        // 1x3 asymmetric skipping (bin_x=1, skip_x=0; bin_y=1, skip_y=2) -> 3.0
+        meta.binning_x = 1;
+        meta.skipping_x = 0;
+        meta.binning_y = 1;
+        meta.skipping_y = 2;
+        assert_eq!(meta.default_stretch(), 3.0);
+
+        // 3x1 binning (bin_x=3, skip_x=0; bin_y=1, skip_y=0) -> 3.0
+        meta.binning_x = 3;
+        meta.skipping_x = 0;
+        meta.binning_y = 1;
+        meta.skipping_y = 0;
+        assert_eq!(meta.default_stretch(), 3.0);
     }
 }
 

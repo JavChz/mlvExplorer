@@ -1,7 +1,7 @@
 //! Background thumbnail extraction and texture cache.
-//! Checks SQLite for cached JPEG thumbnails. If missing, spawns a background task
-//! to decode frame 0, render a preview superpixel, compress to JPEG, store in DB,
-//! and load into an egui::TextureHandle.
+//! Checks SQLite for cached JPEG thumbnails. If missing, uses a worker pool
+//! to fast-scan up to frame 0, render a box-averaged preview, compress to JPEG,
+//! store in DB, and load into an egui::TextureHandle.
 
 use crate::db::{load_thumb, open_connection, store_thumb};
 use crate::mlv::{render_preview, FrameSource};
@@ -31,58 +31,70 @@ impl ThumbnailManager {
         let (tx_req, rx_req) = unbounded::<(i64, String)>();
         let (tx_res, rx_res) = unbounded::<ThumbResult>();
 
-        // Spawn background worker thread for thumbnail generation
-        let worker_db_path = db_path.clone();
-        std::thread::spawn(move || {
-            let conn = open_connection(&worker_db_path).ok();
-            while let Ok((video_id, file_path)) = rx_req.recv() {
-                // 1. Try loading cached JPEG from DB
-                if let Some(ref c) = conn {
-                    if let Some(jpeg_bytes) = load_thumb(c, video_id) {
-                        if let Ok(img) = image::load_from_memory(&jpeg_bytes) {
-                            let rgba = img.to_rgba8();
-                            let (w, h) = (rgba.width(), rgba.height());
+        let workers = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .clamp(2, 4);
+
+        for _ in 0..workers {
+            let worker_db_path = db_path.clone();
+            let rx_req = rx_req.clone();
+            let tx_res = tx_res.clone();
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                let conn = open_connection(&worker_db_path).ok();
+                while let Ok((video_id, file_path)) = rx_req.recv() {
+                    // 1. Try loading cached JPEG from DB
+                    if let Some(ref c) = conn {
+                        if let Some(jpeg_bytes) = load_thumb(c, video_id) {
+                            if let Ok(img) = image::load_from_memory(&jpeg_bytes) {
+                                let rgba = img.to_rgba8();
+                                let (w, h) = (rgba.width(), rgba.height());
+                                let _ = tx_res.send(ThumbResult {
+                                    video_id,
+                                    width: w,
+                                    height: h,
+                                    rgba: rgba.into_raw(),
+                                });
+                                ctx.request_repaint();
+                                continue;
+                            }
+                        }
+                    }
+
+                    // 2. Fast-scan & decode frame 0 from MLV
+                    if let Ok(source) = FrameSource::open_first_frame(&file_path) {
+                        if let Ok(frame) = source.decode(0) {
+                            let (w, h, rgba) = render_preview(&frame, &source.clip.meta, 560);
+                            if w == 0 || h == 0 || rgba.is_empty() {
+                                continue;
+                            }
+
+                            // Compress to JPEG for compact SQLite storage
+                            if let Some(ref c) = conn {
+                                let mut jpeg_buf = Vec::new();
+                                let mut cursor = Cursor::new(&mut jpeg_buf);
+                                if let Some(img) = image::RgbaImage::from_raw(w, h, rgba.clone()) {
+                                    let rgb = image::DynamicImage::ImageRgba8(img).to_rgb8();
+                                    let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 88);
+                                    if rgb.write_with_encoder(enc).is_ok() {
+                                        store_thumb(c, video_id, &jpeg_buf);
+                                    }
+                                }
+                            }
+
                             let _ = tx_res.send(ThumbResult {
                                 video_id,
                                 width: w,
                                 height: h,
-                                rgba: rgba.into_raw(),
+                                rgba,
                             });
                             ctx.request_repaint();
-                            continue;
                         }
                     }
                 }
-
-                // 2. Decode frame 0 from MLV
-                if let Ok(source) = FrameSource::open(&file_path) {
-                    if let Ok(frame) = source.decode(0) {
-                        let (w, h, rgba) = render_preview(&frame, &source.clip.meta, 360);
-                        
-                        // Compress to JPEG for compact SQLite storage
-                        if let Some(ref c) = conn {
-                            let mut jpeg_buf = Vec::new();
-                            let mut cursor = Cursor::new(&mut jpeg_buf);
-                            let img_buf = image::RgbaImage::from_raw(w, h, rgba.clone());
-                            if let Some(img) = img_buf {
-                                let rgb = image::DynamicImage::ImageRgba8(img).to_rgb8();
-                                if rgb.write_to(&mut cursor, image::ImageFormat::Jpeg).is_ok() {
-                                    store_thumb(c, video_id, &jpeg_buf);
-                                }
-                            }
-                        }
-
-                        let _ = tx_res.send(ThumbResult {
-                            video_id,
-                            width: w,
-                            height: h,
-                            rgba,
-                        });
-                        ctx.request_repaint();
-                    }
-                }
-            }
-        });
+            });
+        }
 
         Self {
             _db_path: db_path,
@@ -91,6 +103,13 @@ impl ThumbnailManager {
             tx: tx_req,
             rx: rx_res,
         }
+    }
+
+    /// Clear in-memory thumbnail textures and in-flight state (used when rebuilding thumbnails).
+    pub fn clear_cache(&mut self) {
+        self.textures.clear();
+        self.in_flight.clear();
+        while self.rx.try_recv().is_ok() {}
     }
 
     /// Process incoming thumbnail completions

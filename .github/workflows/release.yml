@@ -4,10 +4,11 @@ on:
   push:
     tags:
       - "v*"
+      - "[0-9]*.[0-9]*.[0-9]*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v0.0.1)"
+        description: "Release tag (e.g. v0.0.3)"
         required: false
         default: ""
 
@@ -16,7 +17,7 @@ permissions:
 
 jobs:
   build-windows:
-    name: Build Windows x64
+    name: Build Windows x64 (Portable Zip + Installer Exe)
     runs-on: windows-latest
     steps:
       - name: Checkout repository
@@ -43,46 +44,96 @@ jobs:
       - name: Determine Version
         shell: pwsh
         run: |
-          if ("${{ github.event.inputs.tag }}" -ne "") {
-            $ver = "${{ github.event.inputs.tag }}"
-          } elseif ($env:GITHUB_REF_NAME -match '^v?(.+)$') {
-            $ver = "v$($Matches[1])"
+          $rawTag = "${{ github.event.inputs.tag }}"
+          if ([string]::IsNullOrWhiteSpace($rawTag)) {
+            if ($env:GITHUB_REF_TYPE -eq "tag" -or $env:GITHUB_REF_NAME -match '^v?[0-9]+\.[0-9]+\.[0-9]+') {
+              $rawTag = $env:GITHUB_REF_NAME
+            }
+          }
+          if (-not [string]::IsNullOrWhiteSpace($rawTag)) {
+            $appVer = $rawTag.Trim() -replace '^v', ''
           } else {
             $toml = Get-Content "Cargo.toml" -Raw
             if ($toml -match '(?m)^version\s*=\s*"([^"]+)"') {
-              $ver = "v$($Matches[1])"
+              $appVer = $Matches[1]
             } else {
-              $ver = "v0.0.1"
+              $appVer = "0.0.1"
             }
           }
-          Write-Host "Resolved Version: $ver"
-          "RELEASE_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $relVer = "v$appVer"
+          Write-Host "Resolved APP_VERSION=$appVer, RELEASE_VERSION=$relVer"
+          "APP_VERSION=$appVer" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "RELEASE_VERSION=$relVer" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Sync Cargo.toml Version
+        shell: pwsh
+        run: |
+          $appVer = $env:APP_VERSION
+          $tomlPath = (Resolve-Path "Cargo.toml").Path
+          $content = [System.IO.File]::ReadAllText($tomlPath, [System.Text.UTF8Encoding]::new($false))
+          $regex = [regex]::new('(?ms)(\[package\].*?^version\s*=\s*)"[^"]+"')
+          $updated = $regex.Replace($content, "`${1}`"$appVer`"", 1)
+          [System.IO.File]::WriteAllText($tomlPath, $updated, [System.Text.UTF8Encoding]::new($false))
+          Write-Host "Synced Cargo.toml version to $appVer"
 
       - name: Build Release Binary
         run: cargo build --release --target x86_64-pc-windows-msvc
 
-      - name: Package Windows Zip Archive
+      - name: Package Windows Portable Zip Archive
         shell: pwsh
         run: |
           $ver = $env:RELEASE_VERSION
-          $pkgName = "mlv-explorer-$ver-windows-x64"
+          $pkgName = "mlv-explorer-$ver-windows-x64-portable"
           $staging = "staging\$pkgName"
+          if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
           New-Item -ItemType Directory -Path $staging -Force | Out-Null
           Copy-Item "target\x86_64-pc-windows-msvc\release\mlv-explorer.exe" -Destination "$staging\mlv-explorer.exe"
           Copy-Item "README.md" -Destination "$staging\README.md"
           Copy-Item "LICENSE" -Destination "$staging\LICENSE"
 
           New-Item -ItemType Directory -Path "dist" -Force | Out-Null
-          Compress-Archive -Path "$staging\*" -DestinationPath "dist\$pkgName.zip" -CompressionLevel Optimal
+          Compress-Archive -Path "$staging\*" -DestinationPath "dist\$pkgName.zip" -CompressionLevel Optimal -Force
+          Remove-Item $staging -Recurse -Force
 
-      - name: Upload Windows Artifact
+      - name: Build Windows Installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $ver = $env:RELEASE_VERSION
+          $appVer = $env:APP_VERSION
+          $iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+          if (-not $iscc -and (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
+            $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          }
+          if (-not $iscc -and (Test-Path "C:\Program Files\Inno Setup 6\ISCC.exe")) {
+            $iscc = "C:\Program Files\Inno Setup 6\ISCC.exe"
+          }
+          if (-not $iscc) {
+            Write-Host "Installing Inno Setup via Chocolatey..."
+            choco install innosetup -y --no-progress | Out-Host
+            if (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe") {
+              $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+            } else {
+              $iscc = Get-Command ISCC.exe -ErrorAction Stop | Select-Object -ExpandProperty Source
+            }
+          }
+          $setupBase = "mlv-explorer-$ver-windows-x64-setup"
+          & $iscc "/DMyAppVersion=$appVer" "/DSourceExe=target\x86_64-pc-windows-msvc\release\mlv-explorer.exe" "/DOutputDir=dist" "/DOutputBaseFilename=$setupBase" "installer\mlv-explorer.iss"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $setupExe = "dist\$setupBase.exe"
+          if (-not (Test-Path $setupExe)) {
+            throw "Expected installer executable not found at $setupExe"
+          }
+
+      - name: Upload Windows Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: windows-artifact
-          path: dist/*.zip
+          name: windows-artifacts
+          path: |
+            dist/*.zip
+            dist/*.exe
 
   build-linux:
-    name: Build Linux x64 (.tar.gz & .AppImage)
+    name: Build Linux x64 (.tar.gz, .AppImage & .deb)
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout repository
@@ -102,6 +153,7 @@ jobs:
             libxkbcommon-dev \
             libgtk-3-dev \
             libfuse2 \
+            dpkg-dev \
             wget \
             file
 
@@ -125,24 +177,41 @@ jobs:
 
       - name: Determine Version
         run: |
-          if [ -n "${{ github.event.inputs.tag }}" ]; then
-            VER="${{ github.event.inputs.tag }}"
-          elif [[ "$GITHUB_REF_NAME" =~ ^v?(.+)$ ]]; then
-            VER="v${BASH_REMATCH[1]}"
-          else
-            CARGO_VER=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
-            VER="v${CARGO_VER}"
+          RAW_TAG="${{ github.event.inputs.tag }}"
+          if [ -z "${RAW_TAG}" ]; then
+            if [ "${GITHUB_REF_TYPE}" = "tag" ] || [[ "${GITHUB_REF_NAME}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+              RAW_TAG="${GITHUB_REF_NAME}"
+            fi
           fi
-          echo "Resolved Version: ${VER}"
-          echo "RELEASE_VERSION=${VER}" >> $GITHUB_ENV
+          if [ -n "${RAW_TAG}" ]; then
+            APP_VER="${RAW_TAG#v}"
+          else
+            APP_VER=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          fi
+          REL_VER="v${APP_VER}"
+          echo "Resolved APP_VERSION=${APP_VER}, RELEASE_VERSION=${REL_VER}"
+          echo "APP_VERSION=${APP_VER}" >> "$GITHUB_ENV"
+          echo "RELEASE_VERSION=${REL_VER}" >> "$GITHUB_ENV"
+
+      - name: Sync Cargo.toml Version
+        run: |
+          python3 - <<'PY'
+          import os, re
+          ver = os.environ["APP_VERSION"]
+          with open("Cargo.toml", "r", encoding="utf-8") as f:
+              txt = f.read()
+          new_txt = re.sub(r'(?ms)(\[package\].*?^version\s*=\s*)"[^"]+"', lambda m: f'{m.group(1)}"{ver}"', txt, count=1)
+          with open("Cargo.toml", "w", encoding="utf-8") as f:
+              f.write(new_txt)
+          PY
 
       - name: Build Release Binary
         run: cargo build --release --target x86_64-unknown-linux-gnu
 
-      - name: Package Linux tar.gz Archive
+      - name: Package Linux Portable tar.gz Archive
         run: |
           VER="${{ env.RELEASE_VERSION }}"
-          PKG_NAME="mlv-explorer-${VER}-linux-x64"
+          PKG_NAME="mlv-explorer-${VER}-linux-x64-portable"
           STAGING="staging/${PKG_NAME}"
           mkdir -p "${STAGING}" "dist"
 
@@ -170,22 +239,51 @@ jobs:
           cp assets/icons/mlv-explorer.png "${APPDIR}/mlv-explorer.png"
           cp assets/icons/mlv-explorer.png "${APPDIR}/usr/share/icons/hicolor/256x256/apps/mlv-explorer.png"
 
-          cat << 'EOF' > "${APPDIR}/AppRun"
-          #!/bin/sh
-          SELF=$(readlink -f "$0")
-          HERE=${SELF%/*}
-          export PATH="${HERE}/usr/bin/:${PATH}"
-          export LD_LIBRARY_PATH="${HERE}/usr/lib/:${LD_LIBRARY_PATH}"
-          exec "${HERE}/usr/bin/mlv-explorer" "$@"
-          EOF
+          printf '%s\n' \
+            '#!/bin/sh' \
+            'SELF=$(readlink -f "$0")' \
+            'HERE=${SELF%/*}' \
+            'export PATH="${HERE}/usr/bin/:${PATH}"' \
+            'export LD_LIBRARY_PATH="${HERE}/usr/lib/:${LD_LIBRARY_PATH}"' \
+            'exec "${HERE}/usr/bin/mlv-explorer" "$@"' > "${APPDIR}/AppRun"
           chmod +x "${APPDIR}/AppRun"
 
-          # Download appimagetool
           wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
           chmod +x appimagetool
 
           ARCH=x86_64 ./appimagetool --appimage-extract-and-run "${APPDIR}" "dist/mlv-explorer-${VER}-x86_64.AppImage"
           rm -rf "${APPDIR}" appimagetool
+
+      - name: Package Linux .deb Installer
+        run: |
+          VER="${{ env.RELEASE_VERSION }}"
+          APP_VER="${{ env.APP_VERSION }}"
+          DEB_ROOT="deb-pkg"
+          DEB_FILE="dist/mlv-explorer-${VER}-linux-amd64.deb"
+          rm -rf "${DEB_ROOT}"
+          mkdir -p "${DEB_ROOT}/DEBIAN" \
+                   "${DEB_ROOT}/usr/bin" \
+                   "${DEB_ROOT}/usr/share/applications" \
+                   "${DEB_ROOT}/usr/share/icons/hicolor/256x256/apps"
+
+          cp target/x86_64-unknown-linux-gnu/release/mlv-explorer "${DEB_ROOT}/usr/bin/mlv-explorer"
+          chmod 755 "${DEB_ROOT}/usr/bin/mlv-explorer"
+          cp assets/mlv-explorer.desktop "${DEB_ROOT}/usr/share/applications/mlv-explorer.desktop"
+          cp assets/icons/mlv-explorer.png "${DEB_ROOT}/usr/share/icons/hicolor/256x256/apps/mlv-explorer.png"
+
+          printf '%s\n' \
+            "Package: mlv-explorer" \
+            "Version: ${APP_VER}" \
+            "Section: video" \
+            "Priority: optional" \
+            "Architecture: amd64" \
+            "Maintainer: MLV Explorer Contributors <noreply@github.com>" \
+            "Depends: libasound2, libgtk-3-0, libxkbcommon0" \
+            "Description: Magic Lantern RAW Video Catalog, Browser, and GPU Player" \
+            " Photo catalog-style browser, player, and organizer for Magic Lantern RAW (.mlv) video." > "${DEB_ROOT}/DEBIAN/control"
+
+          dpkg-deb --build --root-owner-group "${DEB_ROOT}" "${DEB_FILE}"
+          rm -rf "${DEB_ROOT}"
 
       - name: Upload Linux Artifacts
         uses: actions/upload-artifact@v4
@@ -194,6 +292,7 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.AppImage
+            dist/*.deb
 
   publish-release:
     name: Publish GitHub Release
@@ -205,15 +304,18 @@ jobs:
 
       - name: Determine Version
         run: |
-          if [ -n "${{ github.event.inputs.tag }}" ]; then
-            VER="${{ github.event.inputs.tag }}"
-          elif [[ "$GITHUB_REF_NAME" =~ ^v?(.+)$ ]]; then
-            VER="v${BASH_REMATCH[1]}"
-          else
-            CARGO_VER=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
-            VER="v${CARGO_VER}"
+          RAW_TAG="${{ github.event.inputs.tag }}"
+          if [ -z "${RAW_TAG}" ]; then
+            if [ "${GITHUB_REF_TYPE}" = "tag" ] || [[ "${GITHUB_REF_NAME}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+              RAW_TAG="${GITHUB_REF_NAME}"
+            fi
           fi
-          echo "RELEASE_TAG=${VER}" >> $GITHUB_ENV
+          if [ -n "${RAW_TAG}" ]; then
+            APP_VER="${RAW_TAG#v}"
+          else
+            APP_VER=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          fi
+          echo "RELEASE_TAG=v${APP_VER}" >> "$GITHUB_ENV"
 
       - name: Download all built artifacts
         uses: actions/download-artifact@v4
@@ -221,8 +323,10 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Display release assets
-        run: ls -lh release-assets/
+      - name: Generate Checksums & Display Release Assets
+        run: |
+          (cd release-assets && sha256sum * > SHA256SUMS.txt)
+          ls -lh release-assets/
 
       - name: Create or Update GitHub Release
         uses: softprops/action-gh-release@v2

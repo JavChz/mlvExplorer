@@ -125,13 +125,20 @@ impl Navigator {
 
                 ui.add_space(8.0);
 
+                let hide_zero = filter.is_filtered();
+
                 // Section: CAMERAS
-                let trailing_cam = (!facets.cameras.is_empty()).then(|| RichText::new(facets.cameras.len().to_string()).size(FONT_CAPTION).color(text_muted(ui)).into());
+                let visible_cams: Vec<&crate::db::Facet> = facets
+                    .cameras
+                    .iter()
+                    .filter(|c| !hide_zero || c.count > 0 || filter.camera.as_ref() == Some(&c.name))
+                    .collect();
+                let trailing_cam = (!visible_cams.is_empty()).then(|| RichText::new(visible_cams.len().to_string()).size(FONT_CAPTION).color(text_muted(ui)).into());
                 widgets::section(ui, "Cameras", true, trailing_cam, |ui| {
-                    if facets.cameras.is_empty() {
-                        ui.label(RichText::new("No cameras detected").size(FONT_SMALL).color(text_hint(ui)));
+                    if visible_cams.is_empty() {
+                        ui.label(RichText::new("No matching cameras").size(FONT_SMALL).color(text_hint(ui)));
                     }
-                    for cam in &facets.cameras {
+                    for cam in visible_cams {
                         let is_sel = filter.camera.as_ref() == Some(&cam.name);
                         let (clicked, _) = Self::nav_item(ui, is_sel, icon::CAMERA, &cam.name, cam.count, None, None);
                         if clicked {
@@ -142,12 +149,17 @@ impl Navigator {
                 });
 
                 // Section: LENSES
-                let trailing_lens = (!facets.lenses.is_empty()).then(|| RichText::new(facets.lenses.len().to_string()).size(FONT_CAPTION).color(text_muted(ui)).into());
+                let visible_lenses: Vec<&crate::db::Facet> = facets
+                    .lenses
+                    .iter()
+                    .filter(|l| !hide_zero || l.count > 0 || filter.lens.as_ref() == Some(&l.name))
+                    .collect();
+                let trailing_lens = (!visible_lenses.is_empty()).then(|| RichText::new(visible_lenses.len().to_string()).size(FONT_CAPTION).color(text_muted(ui)).into());
                 widgets::section(ui, "Lenses", true, trailing_lens, |ui| {
-                    if facets.lenses.is_empty() {
-                        ui.label(RichText::new("No lenses detected").size(FONT_SMALL).color(text_hint(ui)));
+                    if visible_lenses.is_empty() {
+                        ui.label(RichText::new("No matching lenses").size(FONT_SMALL).color(text_hint(ui)));
                     }
-                    for lens in &facets.lenses {
+                    for lens in visible_lenses {
                         let is_sel = filter.lens.as_ref() == Some(&lens.name);
                         let (clicked, _) = Self::nav_item(ui, is_sel, icon::APERTURE, &lens.name, lens.count, None, None);
                         if clicked {
@@ -158,8 +170,12 @@ impl Navigator {
                 });
 
                 // Section: KEYWORDS / TAGS (Hierarchical tree like Lightroom)
-                let total_tags_count = facets.tags.len();
-                let trailing_tags = (total_tags_count > 0).then(|| RichText::new(total_tags_count.to_string()).size(FONT_CAPTION).color(text_muted(ui)).into());
+                let visible_tags_count = if hide_zero {
+                    facets.tags.iter().filter(|t| t.count > 0 || filter.tag.as_ref() == Some(&t.name)).count()
+                } else {
+                    facets.tags.len()
+                };
+                let trailing_tags = (visible_tags_count > 0).then(|| RichText::new(visible_tags_count.to_string()).size(FONT_CAPTION).color(text_muted(ui)).into());
                 widgets::section(ui, "Keywords", true, trailing_tags, |ui| {
                     // Quick Add Keyword directly from the left Navigator sidebar
                     let kw_input_id = ui.make_persistent_id("nav_new_kw_input");
@@ -394,6 +410,10 @@ impl Navigator {
         action: &mut Option<NavigatorAction>,
     ) -> bool {
         let is_sel = filter.tag.as_ref() == Some(&node.name);
+        let has_selected_descendant = filter.tag.as_ref().map_or(false, |t| Self::subtree_contains_tag(node, t));
+        if filter.is_filtered() && node.total_count == 0 && !is_sel && !has_selected_descendant {
+            return false;
+        }
         let is_disabled = node.total_count == 0 && !is_sel;
         let id = ui.make_persistent_id(format!("kw_node_{}", node.id));
         let mut is_expanded = ui.data_mut(|d| d.get_temp::<bool>(id).unwrap_or(true));
@@ -682,5 +702,9 @@ impl Navigator {
         }
 
         !is_disabled && (response.clicked() || arrow_resp.clicked())
+    }
+
+    fn subtree_contains_tag(node: &crate::db::TagNode, target: &str) -> bool {
+        node.name == target || node.children.iter().any(|c| Self::subtree_contains_tag(c, target))
     }
 }

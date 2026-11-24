@@ -162,7 +162,7 @@ impl<'a> Queries<'a> {
                    v.aperture_fstop, v.iso, v.shutter_speed, v.white_balance_kelvin,
                    v.date_recorded, v.imported_at, v.rating, v.flag, v.notes, v.color_label,
                    v.codec, v.has_audio, v.chunk_count, v.stretch_factor,
-                   v.scene, v.shot, v.take, v.location, v.camera_unit,
+                   v.scene, v.shot, v.take, v.location, v.camera_unit, v.rotation,
                    (SELECT GROUP_CONCAT(t.name, char(31)) FROM video_tags vt JOIN tags t ON t.id = vt.tag_id WHERE vt.video_id = v.id) AS tags
             FROM videos v
             WHERE 1=1
@@ -218,7 +218,7 @@ impl<'a> Queries<'a> {
         let mut stmt = self.conn.prepare(&query)?;
         let refs: Vec<&dyn rusqlite::ToSql> = p.iter().map(|b| b.as_ref()).collect();
         let rows = stmt.query_map(refs.as_slice(), |row| {
-            let tags: Option<String> = row.get(33)?;
+            let tags: Option<String> = row.get(34)?;
             Ok(VideoRecord {
                 id: row.get(0)?,
                 file_path: row.get(1)?,
@@ -253,6 +253,7 @@ impl<'a> Queries<'a> {
                 take: row.get(30)?,
                 location: row.get(31)?,
                 camera_unit: row.get(32)?,
+                rotation: row.get::<_, Option<i64>>(33)?.unwrap_or(0).rem_euclid(360) as u16,
                 tags: tags
                     .map(|s| s.split('\u{1f}').map(|t| t.to_string()).collect())
                     .unwrap_or_default(),
@@ -263,6 +264,17 @@ impl<'a> Queries<'a> {
 
     pub fn set_stretch_factor(&self, video_id: i64, stretch: f32) -> Result<()> {
         self.conn.execute("UPDATE videos SET stretch_factor = ?1 WHERE id = ?2", params![stretch as f64, video_id])?;
+        Ok(())
+    }
+
+    pub fn set_rotation(&self, video_id: i64, rotation: u16) -> Result<()> {
+        let norm = (rotation % 360) as i64;
+        self.conn.execute("UPDATE videos SET rotation = ?1 WHERE id = ?2", params![norm, video_id])?;
+        Ok(())
+    }
+
+    pub fn clear_all_thumbs(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM thumbs", [])?;
         Ok(())
     }
 
@@ -742,6 +754,9 @@ impl<'a> Queries<'a> {
             if vid.stretch_factor > 0.05 {
                 let _ = self.set_stretch_factor(row_id, vid.stretch_factor);
             }
+            if vid.rotation != 0 {
+                let _ = self.set_rotation(row_id, vid.rotation);
+            }
             for t in &vid.tags {
                 let _ = self.add_tag(row_id, t);
             }
@@ -853,6 +868,9 @@ impl<'a> Queries<'a> {
             );
             if vid.stretch_factor > 0.05 {
                 let _ = self.set_stretch_factor(row_id, vid.stretch_factor);
+            }
+            if vid.rotation != 0 {
+                let _ = self.set_rotation(row_id, vid.rotation);
             }
             for t in &vid.tags {
                 let _ = self.add_tag(row_id, t);

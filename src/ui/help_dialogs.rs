@@ -29,6 +29,7 @@ enum DialogAction {
         name: String,
         url: String,
     },
+    InstallAndRestart(std::path::PathBuf),
 }
 
 struct ShortcutItem {
@@ -48,8 +49,17 @@ const SHORTCUTS: &[ShortcutItem] = &[
     
     // Player Controls
     ShortcutItem { key: "Space", context: "Player", desc: "Play / Pause playback" },
-    ShortcutItem { key: "Left / Right", context: "Player", desc: "Step 1 frame backward / forward" },
+    ShortcutItem { key: "J / K / L", context: "Player", desc: "Shuttle Reverse (1x/2x/4x) / Pause / Forward (1x/2x/4x)" },
+    ShortcutItem { key: "Left / Right", context: "Player", desc: "Step 1 frame backward / forward (Shift = 1s jump)" },
+    ShortcutItem { key: "Home / End", context: "Player", desc: "Jump to First / Last frame" },
+    ShortcutItem { key: "I / O / Alt + X", context: "Player", desc: "Set Loop In / Loop Out / Clear Loop Range" },
+    ShortcutItem { key: "[ / ] or PgUp / PgDn", context: "Player", desc: "Switch to Previous / Next clip" },
+    ShortcutItem { key: "H", context: "Player", desc: "Cycle Focus Pixel Removal (Auto / FPM Only / Off)" },
+    ShortcutItem { key: "R", context: "Player", desc: "Rotate Clip 90° Clockwise (saved per clip)" },
+    ShortcutItem { key: "Z / + / - / Wheel", context: "Player", desc: "Toggle Fit/100% / Zoom In/Out / Zoom to Cursor" },
+    ShortcutItem { key: "Shift + D", context: "Player", desc: "Toggle Performance Telemetry HUD" },
     ShortcutItem { key: "M", context: "Player", desc: "Toggle Audio Mute" },
+    ShortcutItem { key: "Arrows (L/R/U/D)", context: "Grid", desc: "Navigate clips in Contact Sheet Grid" },
 
     // Selection & Rating
     ShortcutItem { key: "1 – 5", context: "Grid / Player", desc: "Set Star Rating (1 to 5 stars)" },
@@ -172,8 +182,9 @@ impl HelpDialogs {
                         ui.label(RichText::new(icon::FILM_STRIP).size(32.0).color(ACCENT));
                         ui.vertical(|ui| {
                             ui.label(RichText::new("MLV Explorer").strong().size(18.0).color(text_primary(ui)));
+                            let edition = crate::updater::detect_install_kind().label();
                             ui.label(
-                                RichText::new(format!("Version {} (Alpha)", env!("CARGO_PKG_VERSION")))
+                                RichText::new(format!("Version {} ({})", env!("CARGO_PKG_VERSION"), edition))
                                     .size(FONT_CAPTION)
                                     .color(text_muted(ui)),
                             );
@@ -297,9 +308,12 @@ impl HelpDialogs {
                             release_title,
                             release_notes,
                             release_url,
+                            install_kind,
                             target_asset_name,
                             target_download_url,
                             target_asset_size,
+                            is_installer,
+                            alt_asset,
                         } => {
                             ui.horizontal(|ui| {
                                 ui.label(RichText::new(icon::DOWNLOAD_SIMPLE).size(28.0).color(ACCENT));
@@ -311,9 +325,14 @@ impl HelpDialogs {
                                             .color(text_primary(ui)),
                                     );
                                     ui.label(
-                                        RichText::new(format!("Current version: v{} ➔ New version: v{}", current_version, latest_version))
-                                            .size(FONT_CAPTION)
-                                            .color(text_muted(ui)),
+                                        RichText::new(format!(
+                                            "Current version: v{} ➔ New version: v{} ({} edition)",
+                                            current_version,
+                                            latest_version,
+                                            install_kind.label()
+                                        ))
+                                        .size(FONT_CAPTION)
+                                        .color(text_muted(ui)),
                                     );
                                 });
                             });
@@ -328,7 +347,7 @@ impl HelpDialogs {
                                     format!(" ({:.1} MB)", mb)
                                 }).unwrap_or_default();
                                 ui.label(
-                                    RichText::new(format!("Package: {}{}", asset_name, size_str))
+                                    RichText::new(format!("Target Package: {}{}", asset_name, size_str))
                                         .size(FONT_CAPTION)
                                         .color(ACCENT_HOVER),
                                 );
@@ -349,11 +368,34 @@ impl HelpDialogs {
                             ui.separator();
                             ui.horizontal(|ui| {
                                 if let (Some(asset_name), Some(url)) = (target_asset_name, target_download_url) {
-                                    if widgets::primary_button(ui, "Download Update").clicked() {
+                                    let primary_label = if *is_installer {
+                                        "Download Installer"
+                                    } else {
+                                        "Download Portable"
+                                    };
+                                    if widgets::primary_button(ui, primary_label).clicked() {
                                         dialog_action = Some(DialogAction::Download {
                                             version: latest_version.clone(),
                                             name: asset_name.clone(),
                                             url: url.clone(),
+                                        });
+                                    }
+                                }
+                                if let Some((alt_name, alt_url, alt_sz)) = alt_asset {
+                                    let alt_label = if crate::updater::is_installer_asset(alt_name) {
+                                        "Download Installer"
+                                    } else {
+                                        "Download Portable"
+                                    };
+                                    let alt_mb = *alt_sz as f64 / (1024.0 * 1024.0);
+                                    if widgets::button(ui, alt_label)
+                                        .on_hover_text(format!("{} ({:.1} MB)", alt_name, alt_mb))
+                                        .clicked()
+                                    {
+                                        dialog_action = Some(DialogAction::Download {
+                                            version: latest_version.clone(),
+                                            name: alt_name.clone(),
+                                            url: alt_url.clone(),
                                         });
                                     }
                                 }
@@ -407,6 +449,7 @@ impl HelpDialogs {
                             latest_version,
                             asset_name: _,
                             file_path,
+                            is_installer,
                         } => {
                             ui.horizontal(|ui| {
                                 ui.label(RichText::new(icon::CHECK_CIRCLE).size(28.0).color(FLAG_PICKED));
@@ -430,7 +473,11 @@ impl HelpDialogs {
 
                             ui.add_space(8.0);
                             ui.horizontal(|ui| {
-                                if widgets::primary_button(ui, "Open File").clicked() {
+                                if *is_installer {
+                                    if widgets::primary_button(ui, "Install & Restart").clicked() {
+                                        dialog_action = Some(DialogAction::InstallAndRestart(file_path.clone()));
+                                    }
+                                } else if widgets::primary_button(ui, "Open File").clicked() {
                                     let _ = open::that(file_path);
                                 }
                                 if let Some(parent) = file_path.parent() {
@@ -439,7 +486,8 @@ impl HelpDialogs {
                                     }
                                 }
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if widgets::button(ui, "Done").clicked() {
+                                    let done_label = if *is_installer { "Later" } else { "Done" };
+                                    if widgets::button(ui, done_label).clicked() {
                                         should_close = true;
                                     }
                                 });
@@ -483,6 +531,13 @@ impl HelpDialogs {
                     DialogAction::Cancel => updater.cancel(),
                     DialogAction::Download { version, name, url } => {
                         updater.download_update(version, name, url);
+                    }
+                    DialogAction::InstallAndRestart(path) => {
+                        if let Err(e) = crate::updater::launch_installer(&path) {
+                            updater.status = UpdateStatus::Error(e);
+                        } else {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
                     }
                 }
             }

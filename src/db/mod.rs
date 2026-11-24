@@ -83,6 +83,16 @@ impl Database {
     }
 
     #[inline]
+    pub fn set_rotation(&self, video_id: i64, rotation: u16) -> Result<()> {
+        self.queries().set_rotation(video_id, rotation)
+    }
+
+    #[inline]
+    pub fn clear_all_thumbs(&self) -> Result<()> {
+        self.queries().clear_all_thumbs()
+    }
+
+    #[inline]
     pub fn all_paths(&self) -> Result<Vec<String>> {
         self.queries().all_paths()
     }
@@ -520,6 +530,35 @@ mod tests {
                 "└─ Family",
             ]
         );
+    }
+
+    #[test]
+    fn test_rotation_and_clear_thumbs() {
+        let db = Database::open(Path::new(":memory:")).unwrap();
+        let mut meta = MlvMetadata::default();
+        meta.file_path = "C:/test/rot.MLV".to_string();
+        meta.width = 1920;
+        meta.height = 1080;
+        meta.fps_num = 24;
+        meta.fps_den = 1;
+        meta.frame_count = 10;
+
+        let id = db.upsert_video(&meta).unwrap();
+        let vids = db.get_videos(&FilterCriteria::default()).unwrap();
+        assert_eq!(vids[0].rotation, 0);
+
+        db.set_rotation(id, 90).unwrap();
+        let vids = db.get_videos(&FilterCriteria::default()).unwrap();
+        assert_eq!(vids[0].rotation, 90);
+
+        db.set_rotation(id, 450).unwrap();
+        let vids = db.get_videos(&FilterCriteria::default()).unwrap();
+        assert_eq!(vids[0].rotation, 90);
+
+        store_thumb(&db.conn, id, b"fakejpeg");
+        assert!(load_thumb(&db.conn, id).is_some());
+        db.clear_all_thumbs().unwrap();
+        assert!(load_thumb(&db.conn, id).is_none());
     }
 }
 

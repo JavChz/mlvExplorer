@@ -69,6 +69,7 @@ pub fn init(conn: &Connection) -> Result<bool> {
         "ALTER TABLE videos ADD COLUMN take TEXT",
         "ALTER TABLE videos ADD COLUMN location TEXT",
         "ALTER TABLE videos ADD COLUMN camera_unit TEXT",
+        "ALTER TABLE videos ADD COLUMN rotation INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE tags ADD COLUMN parent_id INTEGER",
         "CREATE INDEX IF NOT EXISTS idx_tags_parent ON tags(parent_id)",
     ] {

@@ -240,6 +240,86 @@ impl ExternalLauncher {
 
         candidates.into_iter().find(|p| p.is_file())
     }
+
+    /// OS-idiomatic context menu label for revealing a file in the file manager.
+    pub fn reveal_label() -> &'static str {
+        #[cfg(windows)]
+        {
+            "Show in Explorer"
+        }
+        #[cfg(target_os = "macos")]
+        {
+            "Reveal in Finder"
+        }
+        #[cfg(all(not(windows), not(target_os = "macos")))]
+        {
+            "Show in File Manager"
+        }
+    }
+
+    /// Opens the OS file manager with the clip file selected (or opens its folder if missing).
+    pub fn reveal_in_file_manager(file_path: &Path) -> Result<String, String> {
+        let name = file_path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| file_path.display().to_string());
+
+        let resolved = if file_path.exists() {
+            std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf())
+        } else {
+            file_path.to_path_buf()
+        };
+        let clean = clean_windows_path(&resolved);
+
+        #[cfg(windows)]
+        {
+            let win_path = clean.to_string_lossy().replace('/', "\\");
+            if clean.exists() {
+                std::process::Command::new("explorer")
+                    .arg("/select,")
+                    .arg(&win_path)
+                    .spawn()
+                    .map_err(|e| format!("Failed to open Explorer: {e}"))?;
+                return Ok(format!("Revealed {} in Explorer.", name));
+            }
+            if let Some(parent) = clean.parent().filter(|p| p.is_dir()) {
+                open::that(parent).map_err(|e| format!("Failed to open folder: {e}"))?;
+                return Ok(format!("Opened folder for {}.", name));
+            }
+            Err(format!("File not found on disk: {}", win_path))
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            if clean.exists() {
+                std::process::Command::new("open")
+                    .arg("-R")
+                    .arg(&clean)
+                    .spawn()
+                    .map_err(|e| format!("Failed to open Finder: {e}"))?;
+                return Ok(format!("Revealed {} in Finder.", name));
+            }
+            if let Some(parent) = clean.parent().filter(|p| p.is_dir()) {
+                open::that(parent).map_err(|e| format!("Failed to open folder: {e}"))?;
+                return Ok(format!("Opened folder for {}.", name));
+            }
+            Err(format!("File not found on disk: {}", clean.display()))
+        }
+
+        #[cfg(all(not(windows), not(target_os = "macos")))]
+        {
+            let target = if clean.is_dir() {
+                Some(clean.as_path())
+            } else {
+                clean.parent().filter(|p| p.is_dir())
+            };
+            if let Some(dir) = target {
+                open::that(dir).map_err(|e| format!("Failed to open file manager: {e}"))?;
+                return Ok(format!("Opened folder for {}.", name));
+            }
+            Err(format!("File not found on disk: {}", clean.display()))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -299,6 +379,14 @@ mod tests {
 
         let _ = std::fs::remove_file(&session_file);
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_reveal_in_file_manager_missing_path_returns_err() {
+        let missing = Path::new("Z:/nonexistent_mlv_folder_98765/MISSING_CLIP.MLV");
+        let res = ExternalLauncher::reveal_in_file_manager(missing);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("not found"));
     }
 }
 

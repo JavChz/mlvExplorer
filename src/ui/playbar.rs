@@ -8,7 +8,8 @@ pub struct Playbar;
 
 impl Playbar {
     /// Renders a professional NLE video timeline scrubber bar with:
-    /// - Interactive track with cached frames visualization
+    /// - Interactive track with pre-merged cached frame ranges visualization
+    /// - Optional In/Out loop bracket overlay
     /// - Click & drag scrubbing with frame precision snapping
     /// - Hover cursor with timecode tooltip
     /// - Studio playhead needle & handle
@@ -18,7 +19,8 @@ impl Playbar {
         current_frame: usize,
         total_frames: usize,
         fps: f32,
-        cached_frames: &[usize],
+        cached_ranges: &[(usize, usize)],
+        loop_range: Option<(usize, usize)>,
     ) -> Option<usize> {
         let total_frames = total_frames.max(1);
         let current_frame = current_frame.min(total_frames - 1);
@@ -75,49 +77,72 @@ impl Playbar {
             Stroke::new(1.0_f32, BORDER_SUBTLE),
         );
 
-        // 2. Cached/Buffered Frames Visualization
-        if !cached_frames.is_empty() {
+        // 2. Cached/Buffered Frame Ranges Visualization (no cloning or sorting!)
+        if !cached_ranges.is_empty() {
             let buffer_color = ACCENT_DIM;
-            let mut cached_sorted = cached_frames.to_vec();
-            cached_sorted.sort_unstable();
-
-            let mut start = cached_sorted[0];
-            let mut end = start;
-            for &f in &cached_sorted[1..] {
-                if f == end + 1 {
-                    end = f;
-                } else {
-                    let x0 = frame_to_x(start);
-                    let x1 = frame_to_x(end) + 1.5;
-                    let seg_rect = Rect::from_min_max(
-                        Pos2::new(x0.max(track_left), bar_y + 1.0),
-                        Pos2::new(x1.min(track_right), bar_y + bar_h - 1.0),
-                    );
-                    painter.rect_filled(seg_rect, Rounding::ZERO, buffer_color);
-                    start = f;
-                    end = f;
-                }
+            for &(start, end) in cached_ranges {
+                let x0 = frame_to_x(start);
+                let x1 = frame_to_x(end) + 1.5;
+                let seg_rect = Rect::from_min_max(
+                    Pos2::new(x0.max(track_left), bar_y + 1.0),
+                    Pos2::new(x1.min(track_right), bar_y + bar_h - 1.0),
+                );
+                painter.rect_filled(seg_rect, Rounding::ZERO, buffer_color);
             }
-            let x0 = frame_to_x(start);
-            let x1 = frame_to_x(end) + 1.5;
-            let seg_rect = Rect::from_min_max(
-                Pos2::new(x0.max(track_left), bar_y + 1.0),
-                Pos2::new(x1.min(track_right), bar_y + bar_h - 1.0),
-            );
-            painter.rect_filled(seg_rect, Rounding::ZERO, buffer_color);
         }
 
-        // 3. Played Progress Fill (left of playhead)
+        // 3. Played Progress Fill (left of playhead, or from loop_in when loop range set)
         let playhead_x = frame_to_x(current_frame);
-        if playhead_x > track_left {
+        let prog_start_x = loop_range.map(|(a, _)| frame_to_x(a)).unwrap_or(track_left);
+        if playhead_x > prog_start_x {
             let progress_rect = Rect::from_min_max(
-                Pos2::new(track_left, bar_y + 1.0),
+                Pos2::new(prog_start_x.max(track_left), bar_y + 1.0),
                 Pos2::new(playhead_x, bar_y + bar_h - 1.0),
             );
             painter.rect_filled(
                 progress_rect,
                 Rounding::same(1.0),
                 ACCENT,
+            );
+        }
+
+        // 3b. Optional In/Out Loop Range Markers
+        if let Some((in_f, out_f)) = loop_range {
+            let ix = frame_to_x(in_f).clamp(track_left, track_right);
+            let ox = frame_to_x(out_f).clamp(track_left, track_right);
+            let marker_col = WARNING;
+
+            if ix > track_left {
+                let dim_l = Rect::from_min_max(
+                    Pos2::new(track_left, bar_y + 1.0),
+                    Pos2::new(ix, bar_y + bar_h - 1.0),
+                );
+                painter.rect_filled(dim_l, Rounding::ZERO, Color32::from_black_alpha(120));
+            }
+            if ox < track_right {
+                let dim_r = Rect::from_min_max(
+                    Pos2::new(ox, bar_y + 1.0),
+                    Pos2::new(track_right, bar_y + bar_h - 1.0),
+                );
+                painter.rect_filled(dim_r, Rounding::ZERO, Color32::from_black_alpha(120));
+            }
+
+            // Bracket ticks at In and Out
+            painter.line_segment(
+                [Pos2::new(ix, bar_y - 3.0), Pos2::new(ix, bar_y + bar_h + 3.0)],
+                Stroke::new(2.0_f32, marker_col),
+            );
+            painter.line_segment(
+                [Pos2::new(ix, bar_y - 3.0), Pos2::new((ix + 4.0).min(ox), bar_y - 3.0)],
+                Stroke::new(2.0_f32, marker_col),
+            );
+            painter.line_segment(
+                [Pos2::new(ox, bar_y - 3.0), Pos2::new(ox, bar_y + bar_h + 3.0)],
+                Stroke::new(2.0_f32, marker_col),
+            );
+            painter.line_segment(
+                [Pos2::new((ox - 4.0).max(ix), bar_y - 3.0), Pos2::new(ox, bar_y - 3.0)],
+                Stroke::new(2.0_f32, marker_col),
             );
         }
 

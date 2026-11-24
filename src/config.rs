@@ -1,8 +1,13 @@
 //! Persistent application configuration stored in %APPDATA%/MLV Explorer/config.json
 //! (or ~/.local/share/MLV Explorer/config.json on Linux/macOS).
 
+use crate::mlv::FocusPixelMode;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+
+fn default_true() -> bool {
+    true
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThemeMode {
@@ -31,6 +36,18 @@ pub struct AppConfig {
     /// Selected UI theme mode (Dark, Light, System)
     #[serde(default)]
     pub theme_mode: ThemeMode,
+    /// Focus pixel removal mode (Auto / FpmOnly / Off)
+    #[serde(default)]
+    pub focus_pixel_mode: FocusPixelMode,
+    /// Show performance telemetry overlay HUD in the player
+    #[serde(default)]
+    pub show_perf_hud: bool,
+    /// Enable soft highlight roll-off in the RAW preview shader
+    #[serde(default = "default_true")]
+    pub highlight_rolloff: bool,
+    /// Automatically check GitHub Releases for updates on startup
+    #[serde(default = "default_true")]
+    pub auto_check_updates: bool,
 }
 
 impl Default for AppConfig {
@@ -41,6 +58,10 @@ impl Default for AppConfig {
             mlv_app_path: None,
             last_ingest_destination: None,
             theme_mode: ThemeMode::Dark,
+            focus_pixel_mode: FocusPixelMode::Auto,
+            show_perf_hud: false,
+            highlight_rolloff: true,
+            auto_check_updates: true,
         }
     }
 }

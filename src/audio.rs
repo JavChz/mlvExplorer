@@ -17,6 +17,7 @@ pub struct AudioEngine {
     pub is_muted: bool,
     pub speed: f32,
     is_playing: bool,
+    seek_origin_sec: f32,
     current_time_sec: f32,
 }
 
@@ -40,6 +41,7 @@ impl AudioEngine {
             is_muted: false,
             speed: 1.0,
             is_playing: false,
+            seek_origin_sec: 0.0,
             current_time_sec: 0.0,
         }
     }
@@ -94,9 +96,21 @@ impl AudioEngine {
     }
 
     pub fn set_speed(&mut self, speed: f32) {
-        self.speed = speed.clamp(0.25, 4.0);
+        let clamped = speed.clamp(0.25, 4.0);
+        if (self.speed - clamped).abs() <= 1e-4 {
+            return;
+        }
+        let resume_time = if self.sink.as_ref().map(|s| !s.empty()).unwrap_or(false) {
+            self.current_playback_time()
+        } else {
+            None
+        };
+        self.speed = clamped;
         if let Some(ref sink) = self.sink {
             sink.set_speed(self.speed);
+        }
+        if let Some(t) = resume_time {
+            self.seek(t, self.is_playing);
         }
     }
 
@@ -108,7 +122,7 @@ impl AudioEngine {
         self.is_playing = true;
         if let Some(ref sink) = self.sink {
             if sink.is_paused() && !sink.empty() {
-                let cur = self.current_playback_time().unwrap_or(self.current_time_sec);
+                let cur = self.seek_origin_sec + sink.get_pos().as_secs_f32() * self.speed;
                 if (cur - current_time_sec).abs() < 0.08 {
                     sink.play();
                     return;
@@ -119,6 +133,11 @@ impl AudioEngine {
     }
 
     pub fn pause(&mut self) {
+        if self.is_playing {
+            if let Some(cur) = self.current_playback_time() {
+                self.current_time_sec = cur;
+            }
+        }
         self.is_playing = false;
         if let Some(ref sink) = self.sink {
             sink.pause();
@@ -127,13 +146,16 @@ impl AudioEngine {
 
     pub fn stop(&mut self) {
         self.is_playing = false;
+        self.seek_origin_sec = 0.0;
+        self.current_time_sec = 0.0;
         if let Some(ref sink) = self.sink {
             sink.stop();
         }
     }
 
     pub fn seek(&mut self, time_sec: f32, continue_playing: bool) {
-        self.current_time_sec = time_sec.max(0.0);
+        self.seek_origin_sec = time_sec.max(0.0);
+        self.current_time_sec = self.seek_origin_sec;
         let Some(meta) = self.meta.clone() else {
             self.is_playing = false;
             return;
@@ -166,13 +188,19 @@ impl AudioEngine {
                 sink.pause();
             }
         } else {
+            sink.stop();
             self.is_playing = false;
         }
     }
 
     pub fn current_playback_time(&self) -> Option<f32> {
         if self.is_playing {
-            self.sink.as_ref().map(|s| self.current_time_sec + s.get_pos().as_secs_f32())
+            match self.sink.as_ref() {
+                Some(s) if !s.empty() => {
+                    Some(self.seek_origin_sec + s.get_pos().as_secs_f32() * self.speed)
+                }
+                _ => None,
+            }
         } else {
             Some(self.current_time_sec)
         }
@@ -218,5 +246,26 @@ mod tests {
         // Upon loading, audio must NOT be reported as playing or finished
         assert!(!engine.is_playing());
         assert!(!engine.is_finished());
+    }
+
+    #[test]
+    fn test_pause_play_keeps_seek_origin_separate() {
+        let mut engine = AudioEngine::new();
+        let meta = AudioMetadata {
+            format: 1,
+            channels: 2,
+            sample_rate: 48000,
+            bits_per_sample: 16,
+        };
+        engine.load(meta, vec![0i16; 96000]);
+
+        engine.seek(0.25, false);
+        assert!((engine.seek_origin_sec - 0.25).abs() < 1e-6);
+        assert!((engine.current_time_sec - 0.25).abs() < 1e-6);
+        assert_eq!(engine.current_playback_time(), Some(0.25));
+
+        engine.pause();
+        assert!((engine.seek_origin_sec - 0.25).abs() < 1e-6);
+        assert!(!engine.is_playing());
     }
 }

@@ -164,15 +164,42 @@ impl GridView {
         let footer_h = 66.0;
         let card_h = thumb_h + footer_h;
 
-        let mut card_rects: Vec<(usize, Rect)> = Vec::with_capacity(videos.len());
+        let scroll_avail_w = (ui.available_width() - 16.0).max(card_w);
+        let columns = ((scroll_avail_w / (card_w + 12.0)).floor() as usize).max(1);
+        self.last_columns = columns;
 
-        let scroll_output = egui::ScrollArea::vertical()
-            .drag_to_scroll(false)
-            .show(ui, |ui| {
-            let available_width = ui.available_width();
-            let columns = ((available_width / (card_w + 12.0)).floor() as usize).max(1);
+        let mut card_rects: Vec<(usize, Rect)> = Vec::new();
+        let scroll_id = ui.make_persistent_id("mlv_grid_scroll_area");
+        let view_h_est = ui.available_height();
 
-            if self.group_by_day {
+        let mut scroll_area = egui::ScrollArea::vertical()
+            .id_salt(scroll_id)
+            .drag_to_scroll(false);
+
+        if !self.group_by_day {
+            if let Some(target_idx) = self.scroll_to_index.take() {
+                if target_idx < videos.len() {
+                    let row = target_idx / columns;
+                    let row_step = card_h + 12.0;
+                    let y0 = row as f32 * row_step;
+                    let y1 = y0 + card_h;
+                    let cur_y = egui::scroll_area::State::load(ui.ctx(), scroll_id)
+                        .map(|s| s.offset.y)
+                        .unwrap_or(0.0);
+                    if y0 < cur_y {
+                        scroll_area = scroll_area.vertical_scroll_offset(y0);
+                    } else if y1 > cur_y + view_h_est {
+                        scroll_area = scroll_area.vertical_scroll_offset((y1 - view_h_est).max(0.0));
+                    }
+                }
+            }
+        }
+
+        let scroll_output = if self.group_by_day {
+            scroll_area.show(ui, |ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(12.0, 12.0);
+                let available_width = ui.available_width();
+
                 // Group clips by calendar capture day
                 let mut groups: Vec<DayGroup> = Vec::new();
                 for (i, vid) in videos.iter().enumerate() {
@@ -194,85 +221,98 @@ impl GridView {
                     });
                 }
 
-                for (grp_idx, grp) in groups.iter().enumerate() {
+                for grp in &groups {
                     // Day Section Header Banner
-                    ui.add_space(6.0);
+                    ui.add_space(2.0);
                     let (banner_rect, _) = ui.allocate_exact_size(Vec2::new(available_width, 26.0), egui::Sense::hover());
-                    let painter = ui.painter();
-                    painter.rect(
-                        banner_rect,
-                        Rounding::same(ROUNDING),
-                        bg_section(ui),
-                        Stroke::new(1.0_f32, border_subtle(ui)),
-                    );
+                    if ui.is_rect_visible(banner_rect) {
+                        let painter = ui.painter();
+                        painter.rect(
+                            banner_rect,
+                            Rounding::same(ROUNDING),
+                            bg_section(ui),
+                            Stroke::new(1.0_f32, border_subtle(ui)),
+                        );
+                        painter.text(
+                            Pos2::new(banner_rect.min.x + 10.0, banner_rect.center().y),
+                            Align2::LEFT_CENTER,
+                            format!("{}  {}", icon::CALENDAR, grp.title),
+                            egui::FontId::proportional(FONT_BODY),
+                            text_primary(ui),
+                        );
+                        let grp_info = format!(
+                            "{} clips  ·  {}  ·  {}",
+                            grp.indices.len(),
+                            widgets::format_bytes(grp.total_bytes),
+                            format_duration(grp.total_duration_secs)
+                        );
+                        painter.text(
+                            Pos2::new(banner_rect.max.x - 10.0, banner_rect.center().y),
+                            Align2::RIGHT_CENTER,
+                            grp_info,
+                            egui::FontId::proportional(FONT_CAPTION),
+                            text_muted(ui),
+                        );
+                    }
 
-                    // Left title
-                    painter.text(
-                        Pos2::new(banner_rect.min.x + 10.0, banner_rect.center().y),
-                        Align2::LEFT_CENTER,
-                        format!("{}  {}", icon::CALENDAR, grp.title),
-                        egui::FontId::proportional(FONT_BODY),
-                        text_primary(ui),
-                    );
-
-                    // Right stats
-                    let grp_info = format!(
-                        "{} clips  ·  {}  ·  {}",
-                        grp.indices.len(),
-                        widgets::format_bytes(grp.total_bytes),
-                        format_duration(grp.total_duration_secs)
-                    );
-                    painter.text(
-                        Pos2::new(banner_rect.max.x - 10.0, banner_rect.center().y),
-                        Align2::RIGHT_CENTER,
-                        grp_info,
-                        egui::FontId::proportional(FONT_CAPTION),
-                        text_muted(ui),
-                    );
+                    // Virtualized rows within this day group
+                    for chunk in grp.indices.chunks(columns) {
+                        let (row_rect, _) = ui.allocate_exact_size(Vec2::new(available_width, card_h), egui::Sense::hover());
+                        if let Some(target_idx) = self.scroll_to_index {
+                            if chunk.contains(&target_idx) {
+                                ui.scroll_to_rect(row_rect, None);
+                                self.scroll_to_index = None;
+                            }
+                        }
+                        if ui.is_rect_visible(row_rect) {
+                            ui.allocate_new_ui(
+                                egui::UiBuilder::new()
+                                    .max_rect(row_rect)
+                                    .layout(egui::Layout::left_to_right(egui::Align::Min)),
+                                |ui| {
+                                    ui.spacing_mut().item_spacing.x = 12.0;
+                                    for &i in chunk {
+                                        let vid = &videos[i];
+                                        let is_selected = selected_indices.contains(&i);
+                                        let (card_act, rect) = Card::show(
+                                            ui,
+                                            i,
+                                            vid,
+                                            is_selected,
+                                            selected_indices,
+                                            card_w,
+                                            card_h,
+                                            thumb_h,
+                                            thumb_mgr,
+                                        );
+                                        card_rects.push((i, rect));
+                                        if let Some(a) = card_act {
+                                            action = Some(a);
+                                        }
+                                    }
+                                },
+                            );
+                        }
+                    }
 
                     ui.add_space(6.0);
-
-                    // Grid for this day
-                    egui::Grid::new(format!("day_grid_{}", grp_idx))
-                        .spacing([12.0, 12.0])
-                        .show(ui, |ui| {
-                            for (c_idx, &i) in grp.indices.iter().enumerate() {
-                                let vid = &videos[i];
-                                let is_selected = selected_indices.contains(&i);
-
-                                let (card_act, rect) = Card::show(
-                                    ui,
-                                    i,
-                                    vid,
-                                    is_selected,
-                                    selected_indices,
-                                    card_w,
-                                    card_h,
-                                    thumb_h,
-                                    thumb_mgr,
-                                );
-                                card_rects.push((i, rect));
-
-                                if let Some(a) = card_act {
-                                    action = Some(a);
-                                }
-
-                                if (c_idx + 1) % columns == 0 {
-                                    ui.end_row();
-                                }
-                            }
-                        });
-
-                    ui.add_space(10.0);
                 }
-            } else {
-                // Continuous flat grid
-                egui::Grid::new("video_cards_grid_flat")
-                    .spacing([12.0, 12.0])
-                    .show(ui, |ui| {
-                        for (i, vid) in videos.iter().enumerate() {
+            })
+        } else {
+            // Virtualized flat grid via show_rows
+            let total_rows = videos.len().div_ceil(columns);
+            let saved_spacing = ui.spacing().item_spacing.y;
+            ui.spacing_mut().item_spacing.y = 12.0;
+            let out = scroll_area.show_rows(ui, card_h, total_rows, |ui, row_range| {
+                ui.spacing_mut().item_spacing = Vec2::new(12.0, 12.0);
+                for row_idx in row_range {
+                    let start = row_idx * columns;
+                    let end = (start + columns).min(videos.len());
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 12.0;
+                        for i in start..end {
+                            let vid = &videos[i];
                             let is_selected = selected_indices.contains(&i);
-
                             let (card_act, rect) = Card::show(
                                 ui,
                                 i,
@@ -285,18 +325,16 @@ impl GridView {
                                 thumb_mgr,
                             );
                             card_rects.push((i, rect));
-
                             if let Some(a) = card_act {
                                 action = Some(a);
                             }
-
-                            if (i + 1) % columns == 0 {
-                                ui.end_row();
-                            }
                         }
                     });
-            }
-        });
+                }
+            });
+            ui.spacing_mut().item_spacing.y = saved_spacing;
+            out
+        };
 
         // Mouse Rubberband Box Selection
         let inner_rect = scroll_output.inner_rect;

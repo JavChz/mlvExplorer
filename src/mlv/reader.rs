@@ -6,7 +6,7 @@
 
 use super::types::*;
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 /// Little-endian reader over a byte slice that never panics (returns 0 past the end).
@@ -134,11 +134,23 @@ impl MlvClip {
         if let Some(ref dir) = parent {
             scan_dir_for_companions(dir, &mut chunks);
             if let Some(grandparent) = dir.parent() {
-                if let Ok(sib_entries) = std::fs::read_dir(grandparent) {
-                    for sib in sib_entries.filter_map(|e| e.ok()) {
-                        let sp = sib.path();
-                        if sp.is_dir() && sp != *dir {
-                            scan_dir_for_companions(&sp, &mut chunks);
+                if grandparent.parent().is_some() {
+                    if let Ok(sib_entries) = std::fs::read_dir(grandparent) {
+                        let candidate_names = [
+                            format!("{stem}.M00"),
+                            format!("{stem}.m00"),
+                            format!("{stem}.M01"),
+                            format!("{stem}.m01"),
+                            format!("{stem}.MLV"),
+                            format!("{stem}.mlv"),
+                        ];
+                        for sib in sib_entries.filter_map(|e| e.ok()).take(64) {
+                            let sp = sib.path();
+                            if sp.is_dir() && sp != *dir {
+                                if candidate_names.iter().any(|name| sp.join(name).is_file()) {
+                                    scan_dir_for_companions(&sp, &mut chunks);
+                                }
+                            }
                         }
                     }
                 }
@@ -162,12 +174,22 @@ impl MlvClip {
         let mut valid_chunks = Vec::new();
 
         for (ci, chunk_path) in chunks.iter().enumerate() {
+            if ci > 0 {
+                if let (Some(expected), Some(cg)) = (guid, Self::read_file_guid(chunk_path)) {
+                    if cg != expected {
+                        continue; // not part of this recording
+                    }
+                }
+            }
+            let chunk_idx = valid_chunks.len() as u16;
+            let mut chunk_frames = Vec::new();
+            let mut chunk_audio = Vec::new();
             match scan_chunk(
                 chunk_path,
-                valid_chunks.len() as u16,
+                chunk_idx,
                 &mut meta,
-                &mut frames,
-                &mut audio_frames,
+                &mut chunk_frames,
+                &mut chunk_audio,
                 ci == 0,
             ) {
                 Ok(g) => {
@@ -179,6 +201,8 @@ impl MlvClip {
                         guid = Some(g);
                     }
                     valid_chunks.push(chunk_path.clone());
+                    frames.append(&mut chunk_frames);
+                    audio_frames.append(&mut chunk_audio);
                 }
                 Err(e) if ci == 0 => return Err(e),
                 Err(_) => {}
@@ -214,12 +238,54 @@ impl MlvClip {
         if meta.width == 0 || meta.height == 0 {
             return Err("MLV has no RAWI block (unsupported video class)".into());
         }
+        if frames.is_empty() {
+            return Err("MLV contains no video frames".into());
+        }
 
         Ok(Self {
             meta,
             frames,
             audio_frames,
             chunks: valid_chunks,
+        })
+    }
+
+    /// Fast-path opener that reads only the main `.MLV` file up to the first video frame
+    /// and essential header blocks (`RAWI`, `RAWC`, `IDNT`). Used for fast thumbnail generation.
+    pub fn open_first_frame<P: AsRef<Path>>(path: P) -> Result<Self, String> {
+        let main = path.as_ref().to_path_buf();
+        let mut meta = MlvMetadata {
+            file_path: main.to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        let mut frames = Vec::with_capacity(1);
+        let mut audio_frames = Vec::new();
+        let guid = scan_chunk_inner(
+            &main,
+            0,
+            &mut meta,
+            &mut frames,
+            &mut audio_frames,
+            true,
+            true,
+        )?;
+        meta.video_guid = guid;
+        meta.chunk_count = 1;
+        meta.frame_count = frames.len() as u32;
+        sanitize_levels(&mut meta);
+
+        if meta.width == 0 || meta.height == 0 {
+            return Err("MLV has no RAWI block (unsupported video class)".into());
+        }
+        if frames.is_empty() {
+            return Err("MLV has no video frames".into());
+        }
+
+        Ok(Self {
+            meta,
+            frames,
+            audio_frames,
+            chunks: vec![main],
         })
     }
 }
@@ -233,9 +299,20 @@ fn scan_chunk(
     audio_frames: &mut Vec<AudioChunkRef>,
     is_main: bool,
 ) -> Result<u64, String> {
-    let file = File::open(path).map_err(|e| format!("Cannot open {}: {e}", path.display()))?;
-    let file_size = file.metadata().map_err(|e| e.to_string())?.len();
-    let mut r = BufReader::with_capacity(64 * 1024, file);
+    scan_chunk_inner(path, chunk_idx, meta, frames, audio_frames, is_main, false)
+}
+
+fn scan_chunk_inner(
+    path: &Path,
+    chunk_idx: u16,
+    meta: &mut MlvMetadata,
+    frames: &mut Vec<FrameRef>,
+    audio_frames: &mut Vec<AudioChunkRef>,
+    is_main: bool,
+    stop_after_first_frame: bool,
+) -> Result<u64, String> {
+    let mut r = File::open(path).map_err(|e| format!("Cannot open {}: {e}", path.display()))?;
+    let file_size = r.metadata().map_err(|e| e.to_string())?.len();
 
     let mut offset: u64 = 0;
     let mut guid = 0u64;
@@ -258,70 +335,103 @@ fn scan_chunk(
 
         match &ty {
             b"VIDF" => {
+                if size < 32 {
+                    break;
+                }
                 let mut sub = [0u8; 16];
                 if r.read_exact(&mut sub).is_err() {
                     break;
                 }
                 let mut s = Rd::new(&sub, 0);
                 let frame_number = s.u32();
-                let _crop_x = s.u16();
-                let _crop_y = s.u16();
-                let _pan_x = s.u16();
-                let _pan_y = s.u16();
+                let crop_x = s.u16();
+                let crop_y = s.u16();
+                let pan_x = s.u16();
+                let pan_y = s.u16();
                 let frame_space = s.u32() as u64;
+                if frames.is_empty() {
+                    meta.crop_x = crop_x;
+                    meta.crop_y = crop_y;
+                    meta.pan_x = pan_x;
+                    meta.pan_y = pan_y;
+                }
                 let data_off = offset + 32 + frame_space;
-                let data_size = size.saturating_sub(32 + frame_space);
+                let data_size = size.saturating_sub(32).saturating_sub(frame_space);
                 frames.push(FrameRef {
                     frame_number,
                     chunk: chunk_idx,
                     offset: data_off,
                     size: data_size as u32,
                 });
+                if stop_after_first_frame && meta.width > 0 && meta.height > 0 {
+                    break;
+                }
                 let skip = size as i64 - 32;
-                if r.seek_relative(skip).is_err() {
+                if skip > 0 && r.seek(SeekFrom::Current(skip)).is_err() {
                     break;
                 }
             }
             b"MLVI" | b"RAWI" | b"RAWC" | b"IDNT" | b"LENS" | b"EXPO" | b"RTCI" | b"WBAL" | b"DISP" | b"WAVI" => {
-                buf.clear();
-                buf.extend_from_slice(&hdr);
-                buf.resize(size as usize, 0);
-                if r.read_exact(&mut buf[16..]).is_err() {
-                    break;
-                }
-                let g = parse_meta_block(&ty, &buf, meta, is_main);
-                if &ty == b"MLVI" {
-                    guid = g;
+                if size > 64 * 1024 * 1024 {
+                    let skip = size as i64 - 16;
+                    if skip > 0 && r.seek(SeekFrom::Current(skip)).is_err() {
+                        break;
+                    }
+                } else {
+                    buf.clear();
+                    buf.extend_from_slice(&hdr);
+                    buf.resize(size as usize, 0);
+                    if r.read_exact(&mut buf[16..]).is_err() {
+                        break;
+                    }
+                    let g = parse_meta_block(&ty, &buf, meta, is_main);
+                    if &ty == b"MLVI" {
+                        guid = g;
+                    }
+                    if stop_after_first_frame && meta.width > 0 && meta.height > 0 && !frames.is_empty() {
+                        break;
+                    }
                 }
             }
             b"AUDF" => {
-                meta.has_audio = true;
-                let timestamp = u64::from_le_bytes([
-                    hdr[8], hdr[9], hdr[10], hdr[11], hdr[12], hdr[13], hdr[14], hdr[15],
-                ]);
-                let mut sub = [0u8; 8];
-                if r.read_exact(&mut sub).is_err() {
+                if size < 24 {
                     break;
                 }
-                let mut s = Rd::new(&sub, 0);
-                let frame_number = s.u32();
-                let frame_space = s.u32() as u64;
-                let data_off = offset + 24 + frame_space;
-                let data_size = size.saturating_sub(24 + frame_space);
-                audio_frames.push(AudioChunkRef {
-                    timestamp,
-                    frame_number,
-                    chunk: chunk_idx,
-                    offset: data_off,
-                    size: data_size as u32,
-                });
-                let skip = size as i64 - 24;
-                if r.seek_relative(skip).is_err() {
-                    break;
+                meta.has_audio = true;
+                if stop_after_first_frame {
+                    let skip = size as i64 - 16;
+                    if skip > 0 && r.seek(SeekFrom::Current(skip)).is_err() {
+                        break;
+                    }
+                } else {
+                    let timestamp = u64::from_le_bytes([
+                        hdr[8], hdr[9], hdr[10], hdr[11], hdr[12], hdr[13], hdr[14], hdr[15],
+                    ]);
+                    let mut sub = [0u8; 8];
+                    if r.read_exact(&mut sub).is_err() {
+                        break;
+                    }
+                    let mut s = Rd::new(&sub, 0);
+                    let frame_number = s.u32();
+                    let frame_space = s.u32() as u64;
+                    let data_off = offset + 24 + frame_space;
+                    let data_size = size.saturating_sub(24).saturating_sub(frame_space);
+                    audio_frames.push(AudioChunkRef {
+                        timestamp,
+                        frame_number,
+                        chunk: chunk_idx,
+                        offset: data_off,
+                        size: data_size as u32,
+                    });
+                    let skip = size as i64 - 24;
+                    if skip > 0 && r.seek(SeekFrom::Current(skip)).is_err() {
+                        break;
+                    }
                 }
             }
             _ => {
-                if r.seek_relative(size as i64 - 16).is_err() {
+                let skip = size as i64 - 16;
+                if skip > 0 && r.seek(SeekFrom::Current(skip)).is_err() {
                     break;
                 }
             }
@@ -329,8 +439,6 @@ fn scan_chunk(
         offset += size;
     }
 
-    // Make sure underlying position is consistent (not strictly needed)
-    let _ = r.seek(SeekFrom::Start(0));
     Ok(guid)
 }
 
@@ -375,9 +483,7 @@ fn parse_meta_block(ty: &[u8; 4], b: &[u8], m: &mut MlvMetadata, is_main: bool) 
             for _ in 0..4 {
                 r.i32(); // crop
             }
-            for _ in 0..4 {
-                r.i32(); // active area
-            }
+            let active_area = [r.i32(), r.i32(), r.i32(), r.i32()];
             r.i32();
             r.i32(); // exposure_bias[2]
             let cfa = r.u32();
@@ -392,15 +498,19 @@ fn parse_meta_block(ty: &[u8; 4], b: &[u8], m: &mut MlvMetadata, is_main: bool) 
             m.bits_per_pixel = bpp.clamp(0, 16) as u16;
             m.black_level = black.max(0) as u32;
             m.white_level = white.max(0) as u32;
+            m.active_area = active_area;
             m.cfa_pattern = cfa;
             m.color_matrix = cm;
         }
         b"IDNT" => {
             let name = r.cstr::<32>();
-            let _model = r.u32();
+            let model = r.u32();
             let serial = r.cstr::<32>();
             if !name.is_empty() {
                 m.camera_name = name;
+            }
+            if model != 0 {
+                m.camera_model_id = model;
             }
             if !serial.is_empty() {
                 m.camera_serial = serial;
@@ -464,20 +574,31 @@ fn parse_meta_block(ty: &[u8; 4], b: &[u8], m: &mut MlvMetadata, is_main: bool) 
         }
         b"RAWC" => {
             // mlv_rawc_hdr_t
-            let _sensor_res_x = r.u16();
-            let _sensor_res_y = r.u16();
-            let _sensor_crop = r.u16();
+            let sensor_res_x = r.u16();
+            let sensor_res_y = r.u16();
+            let sensor_crop = r.u16();
             let _reserved = r.u16();
             let bin_x = r.u8() as u16;
-            let _skip_x = r.u8();
+            let skip_x = r.u8() as u16;
             let bin_y = r.u8() as u16;
-            let _skip_y = r.u8();
+            let skip_y = r.u8() as u16;
+            if sensor_res_x > 0 {
+                m.sensor_res_x = sensor_res_x;
+            }
+            if sensor_res_y > 0 {
+                m.sensor_res_y = sensor_res_y;
+            }
+            if sensor_crop > 0 {
+                m.sensor_crop = sensor_crop;
+            }
             if bin_x > 0 {
                 m.binning_x = bin_x;
             }
+            m.skipping_x = skip_x;
             if bin_y > 0 {
                 m.binning_y = bin_y;
             }
+            m.skipping_y = skip_y;
         }
         b"DISP" => {
             // Display / aspect ratio block if present
@@ -523,5 +644,47 @@ fn sanitize_levels(m: &mut MlvMetadata) {
     }
     if m.black_level >= m.white_level {
         m.black_level = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn make_block(ty: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut b = Vec::with_capacity(16 + payload.len());
+        b.extend_from_slice(ty);
+        b.extend_from_slice(&((16 + payload.len()) as u32).to_le_bytes());
+        b.extend_from_slice(&0u64.to_le_bytes());
+        b.extend_from_slice(payload);
+        b
+    }
+
+    #[test]
+    fn test_open_rejects_zero_frame_mlv_without_panic() {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("mlv_zero_frame_{}.MLV", std::process::id()));
+        {
+            let mut f = File::create(&dir).unwrap();
+            // Minimal MLVI payload (>= 36 bytes after 16-byte header)
+            let mut mlvi = vec![0u8; 36];
+            mlvi[0..8].copy_from_slice(&0x1234_5678_9ABC_DEF0u64.to_le_bytes());
+            mlvi[28..32].copy_from_slice(&24u32.to_le_bytes());
+            mlvi[32..36].copy_from_slice(&1u32.to_le_bytes());
+            f.write_all(&make_block(b"MLVI", &mlvi)).unwrap();
+
+            // Minimal RAWI payload with x_res=64, y_res=36
+            let mut rawi = vec![0u8; 164];
+            rawi[0..2].copy_from_slice(&64u16.to_le_bytes());
+            rawi[2..4].copy_from_slice(&36u16.to_le_bytes());
+            f.write_all(&make_block(b"RAWI", &rawi)).unwrap();
+        }
+        let res = MlvClip::open(&dir);
+        let _ = std::fs::remove_file(&dir);
+        match res {
+            Err(err) => assert!(err.contains("no video frames"), "Unexpected error: {err}"),
+            Ok(_) => panic!("Expected error when opening 0-frame MLV"),
+        }
     }
 }
